@@ -1,0 +1,1027 @@
+{
+ "packages": [
+  "config",
+  "tracker",
+  "triage"
+ ],
+ "classes": [
+  {
+   "name": "Part",
+   "package": "config",
+   "bases": [],
+   "fields": [
+    {
+     "name": "dir",
+     "type": "str"
+    },
+    {
+     "name": "github",
+     "type": "str"
+    }
+   ],
+   "methods": [],
+   "path": "arete/config.py",
+   "line": 104
+  },
+  {
+   "name": "Repo",
+   "package": "config",
+   "bases": [],
+   "fields": [
+    {
+     "name": "name",
+     "type": "str"
+    },
+    {
+     "name": "path",
+     "type": "Path"
+    },
+    {
+     "name": "github",
+     "type": "str"
+    },
+    {
+     "name": "pipeline",
+     "type": "bool"
+    },
+    {
+     "name": "mine",
+     "type": "bool"
+    },
+    {
+     "name": "public",
+     "type": "bool"
+    },
+    {
+     "name": "tracker",
+     "type": "Literal['github', 'jira', 'local']"
+    },
+    {
+     "name": "jira_project",
+     "type": "str"
+    },
+    {
+     "name": "jira_label",
+     "type": "str"
+    },
+    {
+     "name": "layer",
+     "type": "Path | None"
+    },
+    {
+     "name": "parts",
+     "type": "list[Part]"
+    },
+    {
+     "name": "jev",
+     "type": "bool"
+    }
+   ],
+   "methods": [
+    {
+     "name": "layer_dir",
+     "sig": "()",
+     "ret": "Path"
+    }
+   ],
+   "path": "arete/config.py",
+   "line": 110
+  },
+  {
+   "name": "JiraConfig",
+   "package": "config",
+   "bases": [],
+   "fields": [
+    {
+     "name": "env_file",
+     "type": "Path | None"
+    },
+    {
+     "name": "project",
+     "type": "str"
+    },
+    {
+     "name": "transitions",
+     "type": "dict[str, str]"
+    },
+    {
+     "name": "research",
+     "type": "dict[str, str]"
+    },
+    {
+     "name": "landed",
+     "type": "dict[str, str]"
+    },
+    {
+     "name": "auto",
+     "type": "bool"
+    },
+    {
+     "name": "auto_per_refresh",
+     "type": "int"
+    },
+    {
+     "name": "sprint_only",
+     "type": "bool"
+    },
+    {
+     "name": "skip_types",
+     "type": "list[str]"
+    }
+   ],
+   "methods": [],
+   "path": "arete/config.py",
+   "line": 137
+  },
+  {
+   "name": "Image",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "id",
+     "type": "str"
+    },
+    {
+     "name": "name",
+     "type": "str"
+    },
+    {
+     "name": "size",
+     "type": "int"
+    }
+   ],
+   "methods": [],
+   "path": "arete/tracker.py",
+   "line": 45
+  },
+  {
+   "name": "SavedImages",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "paths",
+     "type": "list[Path]"
+    },
+    {
+     "name": "left_out",
+     "type": "list[str]"
+    }
+   ],
+   "methods": [],
+   "path": "arete/tracker.py",
+   "line": 52
+  },
+  {
+   "name": "Ticket",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "id",
+     "type": "str"
+    },
+    {
+     "name": "ref",
+     "type": "str"
+    },
+    {
+     "name": "title",
+     "type": "str"
+    },
+    {
+     "name": "body",
+     "type": "str"
+    },
+    {
+     "name": "comments",
+     "type": "str"
+    },
+    {
+     "name": "open",
+     "type": "bool"
+    },
+    {
+     "name": "kind",
+     "type": "Literal['feat', 'fix']"
+    },
+    {
+     "name": "url",
+     "type": "str"
+    },
+    {
+     "name": "created",
+     "type": "str"
+    },
+    {
+     "name": "updated",
+     "type": "str"
+    },
+    {
+     "name": "labels",
+     "type": "list[str]"
+    },
+    {
+     "name": "blocker",
+     "type": "str"
+    },
+    {
+     "name": "images",
+     "type": "list[Image]"
+    },
+    {
+     "name": "github_repo",
+     "type": "str"
+    }
+   ],
+   "methods": [],
+   "path": "arete/tracker.py",
+   "line": 66
+  },
+  {
+   "name": "GitHubTracker",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "repo",
+     "type": "config.Repo"
+    }
+   ],
+   "methods": [
+    {
+     "name": "queue_hint",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "label_name",
+     "sig": "(state)",
+     "ret": "str"
+    },
+    {
+     "name": "normalize",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "ref",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "open_agent_tickets",
+     "sig": "()",
+     "ret": "tuple[Ticket, ...]"
+    },
+    {
+     "name": "todo",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "queued_failure",
+     "sig": "(labels)",
+     "ret": "bool"
+    },
+    {
+     "name": "failed_queue",
+     "sig": "()",
+     "ret": "list[str]"
+    },
+    {
+     "name": "by_owner",
+     "sig": "(item)",
+     "ret": "bool"
+    },
+    {
+     "name": "blocker",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "ticket_waits",
+     "sig": "(tid, body)",
+     "ret": "list[tuple[str, int]]"
+    },
+    {
+     "name": "wait_blocker",
+     "sig": "(waits)",
+     "ret": "str"
+    },
+    {
+     "name": "wait_is_open",
+     "sig": "(ref)",
+     "ret": "bool | None"
+    },
+    {
+     "name": "is_open",
+     "sig": "(number)",
+     "ret": "bool | None"
+    },
+    {
+     "name": "issue_open",
+     "sig": "(repo, number)",
+     "ret": "bool | None"
+    },
+    {
+     "name": "replied",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "reply_since",
+     "sig": "(tid, since)",
+     "ret": "str"
+    },
+    {
+     "name": "save_images",
+     "sig": "(t, dest)",
+     "ret": "SavedImages"
+    },
+    {
+     "name": "get",
+     "sig": "(tid)",
+     "ret": "Ticket"
+    },
+    {
+     "name": "prepare",
+     "sig": "()",
+     "ret": "list[str]"
+    },
+    {
+     "name": "in_zte_queue",
+     "sig": "(tid)",
+     "ret": "bool"
+    },
+    {
+     "name": "require_ordinary",
+     "sig": "(tid)",
+     "ret": "None"
+    },
+    {
+     "name": "approve",
+     "sig": "(tid)",
+     "ret": "None"
+    },
+    {
+     "name": "label",
+     "sig": "(tid, add, remove)",
+     "ret": "str"
+    },
+    {
+     "name": "comment",
+     "sig": "(tid, body)",
+     "ret": "str"
+    },
+    {
+     "name": "move",
+     "sig": "(tid, state)",
+     "ret": "str"
+    },
+    {
+     "name": "pr_title",
+     "sig": "(subject, t)",
+     "ret": "str"
+    },
+    {
+     "name": "pr_link",
+     "sig": "(t, whole)",
+     "ret": "str"
+    }
+   ],
+   "path": "arete/tracker.py",
+   "line": 150
+  },
+  {
+   "name": "JiraTracker",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "pr_labels",
+     "type": "tuple[str, ...]"
+    },
+    {
+     "name": "repo",
+     "type": "config.Repo"
+    },
+    {
+     "name": "cfg",
+     "type": "config.JiraConfig"
+    }
+   ],
+   "methods": [
+    {
+     "name": "client",
+     "sig": "()",
+     "ret": "jira.Client"
+    },
+    {
+     "name": "queue_hint",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "label_name",
+     "sig": "(state)",
+     "ret": "str"
+    },
+    {
+     "name": "normalize",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "ref",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "todo",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "blocker",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "is_open",
+     "sig": "(key)",
+     "ret": "bool | None"
+    },
+    {
+     "name": "replied",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "reply_since",
+     "sig": "(tid, since)",
+     "ret": "str"
+    },
+    {
+     "name": "get",
+     "sig": "(tid)",
+     "ret": "Ticket"
+    },
+    {
+     "name": "save_images",
+     "sig": "(t, dest)",
+     "ret": "SavedImages"
+    },
+    {
+     "name": "prepare",
+     "sig": "()",
+     "ret": "list[str]"
+    },
+    {
+     "name": "label",
+     "sig": "(tid, add, remove)",
+     "ret": "str"
+    },
+    {
+     "name": "comment",
+     "sig": "(tid, body)",
+     "ret": "str"
+    },
+    {
+     "name": "move",
+     "sig": "(tid, state)",
+     "ret": "str"
+    },
+    {
+     "name": "move_to",
+     "sig": "(tid, target)",
+     "ret": "str"
+    },
+    {
+     "name": "shift",
+     "sig": "(tid, target, stamps, keep_done)",
+     "ret": "Moved"
+    },
+    {
+     "name": "pr_title",
+     "sig": "(subject, t)",
+     "ret": "str"
+    },
+    {
+     "name": "pr_link",
+     "sig": "(t, whole)",
+     "ret": "str"
+    }
+   ],
+   "path": "arete/tracker.py",
+   "line": 347
+  },
+  {
+   "name": "LocalTracker",
+   "package": "tracker",
+   "bases": [],
+   "fields": [
+    {
+     "name": "pr_labels",
+     "type": "tuple[str, ...]"
+    },
+    {
+     "name": "repo",
+     "type": "config.Repo"
+    }
+   ],
+   "methods": [
+    {
+     "name": "queue_hint",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "label_name",
+     "sig": "(state)",
+     "ret": "str"
+    },
+    {
+     "name": "normalize",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "ref",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "todo",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "by_owner",
+     "sig": "(item)",
+     "ret": "bool"
+    },
+    {
+     "name": "blocker",
+     "sig": "(tid)",
+     "ret": "str"
+    },
+    {
+     "name": "replied",
+     "sig": "()",
+     "ret": "list[Ticket]"
+    },
+    {
+     "name": "reply_since",
+     "sig": "(tid, since)",
+     "ret": "str"
+    },
+    {
+     "name": "save_images",
+     "sig": "(t, dest)",
+     "ret": "SavedImages"
+    },
+    {
+     "name": "get",
+     "sig": "(tid)",
+     "ret": "Ticket"
+    },
+    {
+     "name": "prepare",
+     "sig": "()",
+     "ret": "list[str]"
+    },
+    {
+     "name": "approve",
+     "sig": "(tid)",
+     "ret": "None"
+    },
+    {
+     "name": "label",
+     "sig": "(tid, add, remove)",
+     "ret": "str"
+    },
+    {
+     "name": "comment",
+     "sig": "(tid, body)",
+     "ret": "str"
+    },
+    {
+     "name": "move",
+     "sig": "(tid, state)",
+     "ret": "str"
+    },
+    {
+     "name": "pr_title",
+     "sig": "(subject, t)",
+     "ret": "str"
+    },
+    {
+     "name": "pr_link",
+     "sig": "(t, whole)",
+     "ret": "str"
+    }
+   ],
+   "path": "arete/tracker.py",
+   "line": 503
+  },
+  {
+   "name": "Candidate",
+   "package": "triage",
+   "bases": [],
+   "fields": [
+    {
+     "name": "ref",
+     "type": "str"
+    },
+    {
+     "name": "id",
+     "type": "str"
+    },
+    {
+     "name": "title",
+     "type": "str"
+    },
+    {
+     "name": "url",
+     "type": "str"
+    },
+    {
+     "name": "updated",
+     "type": "str"
+    },
+    {
+     "name": "in_sprint",
+     "type": "bool | None"
+    },
+    {
+     "name": "parent",
+     "type": "str"
+    }
+   ],
+   "methods": [],
+   "path": "arete/triage.py",
+   "line": 98
+  },
+  {
+   "name": "TicketText",
+   "package": "triage",
+   "bases": [],
+   "fields": [
+    {
+     "name": "facts",
+     "type": "str"
+    },
+    {
+     "name": "body",
+     "type": "str"
+    },
+    {
+     "name": "comments",
+     "type": "str"
+    },
+    {
+     "name": "updated",
+     "type": "str"
+    },
+    {
+     "name": "labels",
+     "type": "tuple[str, ...]"
+    },
+    {
+     "name": "title",
+     "type": "str"
+    }
+   ],
+   "methods": [
+    {
+     "name": "text",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "said",
+     "sig": "(title)",
+     "ret": "str"
+    },
+    {
+     "name": "thin",
+     "sig": "()",
+     "ret": "bool"
+    }
+   ],
+   "path": "arete/triage.py",
+   "line": 109
+  },
+  {
+   "name": "Source",
+   "package": "triage",
+   "bases": [],
+   "fields": [
+    {
+     "name": "key",
+     "type": "str"
+    },
+    {
+     "name": "repos",
+     "type": "list[config.Repo]"
+    },
+    {
+     "name": "tracker",
+     "type": "ClassVar[str]"
+    }
+   ],
+   "methods": [
+    {
+     "name": "repos_text",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "by_name",
+     "sig": "()",
+     "ret": "dict[str, config.Repo]"
+    },
+    {
+     "name": "ticket_text",
+     "sig": "(c)",
+     "ret": "str"
+    },
+    {
+     "name": "tid",
+     "sig": "(ref)",
+     "ret": "str"
+    },
+    {
+     "name": "candidate",
+     "sig": "(r)",
+     "ret": "Candidate"
+    }
+   ],
+   "path": "arete/triage.py",
+   "line": 137
+  },
+  {
+   "name": "JiraSource",
+   "package": "triage",
+   "bases": [
+    "Source"
+   ],
+   "fields": [
+    {
+     "name": "jira_cfg",
+     "type": "config.JiraConfig"
+    }
+   ],
+   "methods": [
+    {
+     "name": "name",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "client",
+     "sig": "()",
+     "ret": "jira.Client"
+    },
+    {
+     "name": "candidates",
+     "sig": "()",
+     "ret": "list[Candidate]"
+    },
+    {
+     "name": "ticket",
+     "sig": "(c)",
+     "ret": "TicketText"
+    },
+    {
+     "name": "brief",
+     "sig": "(key)",
+     "ret": "str"
+    },
+    {
+     "name": "route_note",
+     "sig": "(r)",
+     "ret": "str"
+    },
+    {
+     "name": "repo_rule",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "chosen_repos",
+     "sig": "(answer)",
+     "ret": "list[str]"
+    },
+    {
+     "name": "route",
+     "sig": "(repo)",
+     "ret": "str"
+    },
+    {
+     "name": "comment",
+     "sig": "(ref, text)",
+     "ret": "str | None"
+    },
+    {
+     "name": "find_comment",
+     "sig": "(ref, marker)",
+     "ret": "str"
+    },
+    {
+     "name": "approve",
+     "sig": "(r)",
+     "ret": "None"
+    }
+   ],
+   "path": "arete/triage.py",
+   "line": 163
+  },
+  {
+   "name": "GitHubSource",
+   "package": "triage",
+   "bases": [
+    "Source"
+   ],
+   "fields": [],
+   "methods": [
+    {
+     "name": "name",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "issues",
+     "sig": "()",
+     "ret": "tracker.GitHubTracker"
+    },
+    {
+     "name": "candidates",
+     "sig": "()",
+     "ret": "list[Candidate]"
+    },
+    {
+     "name": "ticket",
+     "sig": "(c)",
+     "ret": "TicketText"
+    },
+    {
+     "name": "brief",
+     "sig": "(key)",
+     "ret": "str"
+    },
+    {
+     "name": "route_note",
+     "sig": "(r)",
+     "ret": "str"
+    },
+    {
+     "name": "repo_rule",
+     "sig": "()",
+     "ret": "str"
+    },
+    {
+     "name": "chosen_repos",
+     "sig": "(answer)",
+     "ret": "list[str]"
+    },
+    {
+     "name": "route",
+     "sig": "(repo)",
+     "ret": "str"
+    },
+    {
+     "name": "comment",
+     "sig": "(ref, text)",
+     "ret": "str | None"
+    },
+    {
+     "name": "find_comment",
+     "sig": "(ref, marker)",
+     "ret": "str"
+    },
+    {
+     "name": "approve",
+     "sig": "(r)",
+     "ret": "None"
+    }
+   ],
+   "path": "arete/triage.py",
+   "line": 245
+  },
+  {
+   "name": "Triaged",
+   "package": "triage",
+   "bases": [],
+   "fields": [
+    {
+     "name": "answered",
+     "type": "dict[str, dict]"
+    },
+    {
+     "name": "failed",
+     "type": "dict[str, str]"
+    },
+    {
+     "name": "waiting",
+     "type": "list[str]"
+    },
+    {
+     "name": "spent",
+     "type": "float"
+    },
+    {
+     "name": "calls",
+     "type": "int"
+    },
+    {
+     "name": "screened",
+     "type": "int"
+    }
+   ],
+   "methods": [],
+   "path": "arete/triage.py",
+   "line": 476
+  }
+ ],
+ "relationships": [
+  {
+   "kind": "composition",
+   "from": "Repo",
+   "to": "Part",
+   "label": "parts"
+  },
+  {
+   "kind": "composition",
+   "from": "Ticket",
+   "to": "Image",
+   "label": "images"
+  },
+  {
+   "kind": "association",
+   "from": "GitHubTracker",
+   "to": "Repo",
+   "label": "repo"
+  },
+  {
+   "kind": "association",
+   "from": "JiraTracker",
+   "to": "Repo",
+   "label": "repo"
+  },
+  {
+   "kind": "association",
+   "from": "JiraTracker",
+   "to": "JiraConfig",
+   "label": "cfg"
+  },
+  {
+   "kind": "association",
+   "from": "LocalTracker",
+   "to": "Repo",
+   "label": "repo"
+  },
+  {
+   "kind": "aggregation",
+   "from": "Source",
+   "to": "Repo",
+   "label": "repos"
+  },
+  {
+   "kind": "generalization",
+   "from": "JiraSource",
+   "to": "Source"
+  },
+  {
+   "kind": "association",
+   "from": "JiraSource",
+   "to": "JiraConfig",
+   "label": "jira_cfg"
+  },
+  {
+   "kind": "generalization",
+   "from": "GitHubSource",
+   "to": "Source"
+  },
+  {
+   "kind": "dependency",
+   "from": "tracker",
+   "to": "config",
+   "level": "package"
+  },
+  {
+   "kind": "dependency",
+   "from": "triage",
+   "to": "config",
+   "level": "package"
+  },
+  {
+   "kind": "dependency",
+   "from": "triage",
+   "to": "tracker",
+   "level": "package"
+  }
+ ]
+}

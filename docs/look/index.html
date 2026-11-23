@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UML Board Looks</title>
+<style>
+@font-face { font-family: "Routed Gothic"; src: url(fonts/routed-gothic.woff2) format("woff2"); font-weight: 400; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url(../../plat/board/fonts/jbm-Regular.woff2) format("woff2"); font-weight: 400; font-display: block; }
+@font-face { font-family: "JetBrains Mono"; src: url(../../plat/board/fonts/jbm-Bold.woff2) format("woff2"); font-weight: 700; font-display: block; }
+
+body[data-look="a"] {
+  --bg: #ffffff; --ink: #000000; --muted: #555555; --line: #000000; --box: #ffffff; --head: #ffffff;
+  --pkg: #ffffff; --tab: #ffffff; --tab-ink: #000000; --hollow: #ffffff; --lit: #000000; --sel: #000000;
+  --sel-w: 3; --lit-w: 2; --dim: 0.2; --panel: #ffffff; --panel-line: #000000; --chip: none;
+  --name-font: Helvetica, Arial, sans-serif; --name-weight: 700; --name-tt: none; --name-ls: 0; --name-size: 14px; --name-fill: #000000;
+  --mem-font: ui-monospace, Menlo, Consolas, monospace; --mem-size: 11px; --mem-fill: #000000;
+  --tab-font: Helvetica, Arial, sans-serif; --tab-size: 13px; --tab-ls: 0; --tab-tt: none; --tab-weight: 700;
+  --ui-font: Helvetica, Arial, sans-serif; --btn-on-bg: #000000; --btn-on-ink: #ffffff; --edge-w: 1; --box-w: 1;
+  --pkg-stroke: #000000; --box-stroke: #000000; --head-band: transparent; --pkg-dash: none;
+}
+@media (prefers-color-scheme: dark) {
+  body[data-look="a"] {
+    --bg: #111111; --ink: #ffffff; --muted: #aaaaaa; --line: #ffffff; --box: #111111; --head: #111111;
+    --pkg: #111111; --tab: #111111; --tab-ink: #ffffff; --hollow: #111111; --lit: #ffffff; --sel: #ffffff;
+    --panel: #111111; --panel-line: #ffffff; --name-fill: #ffffff; --mem-fill: #ffffff;
+    --btn-on-bg: #ffffff; --btn-on-ink: #111111; --pkg-stroke: #ffffff; --box-stroke: #ffffff;
+  }
+}
+body[data-look="b"] {
+  --bg: #0B0C0E; --ink: #E7E5DF; --muted: #9C9A93; --line: #E7E5DF; --box: #000000; --head: #000000;
+  --pkg: #0B0C0E; --tab: #E7E5DF; --tab-ink: #0B0C0E; --hollow: #0B0C0E; --lit: #E7E5DF; --sel: #FFD60A;
+  --sel-w: 2; --lit-w: 1.6; --dim: 0.18; --panel: #0B0C0E; --panel-line: #2B2C31; --chip: none;
+  --name-font: "Routed Gothic", "DIN Alternate", "Arial Narrow", sans-serif; --name-weight: 400; --name-tt: uppercase; --name-ls: 0.1em; --name-size: 15px; --name-fill: #ffffff;
+  --mem-font: "JetBrains Mono", ui-monospace, monospace; --mem-size: 11px; --mem-fill: #E7E5DF;
+  --tab-font: "Routed Gothic", "DIN Alternate", "Arial Narrow", sans-serif; --tab-size: 14px; --tab-ls: 0.14em; --tab-tt: uppercase; --tab-weight: 400;
+  --ui-font: "JetBrains Mono", ui-monospace, monospace; --btn-on-bg: #E7E5DF; --btn-on-ink: #0B0C0E; --edge-w: 1; --box-w: 1;
+  --pkg-stroke: #E7E5DF; --box-stroke: #4A4C52; --head-band: transparent; --pkg-dash: none;
+}
+body[data-look="c"] {
+  --bg: #0B0C0E; --ink: #E7E5DF; --muted: #9C9A93; --line: #6E727A; --box: #121418; --head: #1A1D22;
+  --pkg: #0E1013; --tab: #121418; --tab-ink: #9C9A93; --hollow: #0B0C0E; --lit: #FFD60A; --sel: #FFD60A;
+  --sel-w: 2; --lit-w: 1.4; --dim: 0.22; --panel: #121418; --panel-line: #2B2C31; --chip: inline;
+  --name-font: "IBM Plex Sans", system-ui, -apple-system, sans-serif; --name-weight: 600; --name-tt: none; --name-ls: 0; --name-size: 13px; --name-fill: #E7E5DF;
+  --mem-font: "JetBrains Mono", ui-monospace, monospace; --mem-size: 11px; --mem-fill: #BDBBB4;
+  --tab-font: "JetBrains Mono", ui-monospace, monospace; --tab-size: 11px; --tab-ls: 0.06em; --tab-tt: uppercase; --tab-weight: 400;
+  --ui-font: "JetBrains Mono", ui-monospace, monospace; --btn-on-bg: #21252B; --btn-on-ink: #E7E5DF; --edge-w: 1; --box-w: 1;
+  --pkg-stroke: #2B2C31; --box-stroke: #2B2C31; --head-band: #1A1D22; --pkg-dash: 4 3;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); }
+body { font-family: var(--ui-font); font-size: 12px; }
+#board { position: fixed; inset: 0 0 28px 0; width: 100%; height: calc(100% - 28px); display: block; cursor: grab; background: var(--bg); touch-action: none; }
+#board.drag { cursor: grabbing; }
+
+.pkg-body { fill: var(--pkg); stroke: var(--pkg-stroke); stroke-width: 1; stroke-dasharray: var(--pkg-dash); }
+.pkg-tab { fill: var(--tab); stroke: var(--pkg-stroke); stroke-width: 1; stroke-dasharray: none; }
+.pkg-title { font-family: var(--tab-font); font-size: var(--tab-size); letter-spacing: var(--tab-ls); text-transform: var(--tab-tt); font-weight: var(--tab-weight); fill: var(--tab-ink); }
+.pkg-big { font-family: var(--tab-font); font-size: 46px; letter-spacing: var(--tab-ls); text-transform: var(--tab-tt); font-weight: var(--tab-weight); fill: var(--ink); text-anchor: middle; display: none; }
+.pkg-sub { font-family: var(--mem-font); font-size: 22px; fill: var(--muted); text-anchor: middle; display: none; }
+
+.box { fill: var(--box); stroke: var(--box-stroke); stroke-width: var(--box-w); }
+.band { fill: var(--head-band); }
+.divider { stroke: var(--box-stroke); stroke-width: 1; }
+body[data-look="b"] .divider { stroke: #4A4C52; }
+.cname { font-family: var(--name-font); font-weight: var(--name-weight); text-transform: var(--name-tt); letter-spacing: var(--name-ls); font-size: var(--name-size); fill: var(--name-fill); text-anchor: middle; }
+.chip { font-family: var(--mem-font); font-size: 9px; fill: var(--muted); text-anchor: end; text-transform: uppercase; letter-spacing: 0.06em; display: var(--chip); }
+.mem { font-family: var(--mem-font); font-size: var(--mem-size); fill: var(--mem-fill); white-space: pre; }
+.more { font-family: var(--mem-font); font-size: var(--mem-size); fill: var(--muted); }
+.summary { font-family: var(--mem-font); font-size: 12px; fill: var(--muted); text-anchor: middle; }
+
+.edge { fill: none; stroke: var(--line); stroke-width: var(--edge-w); }
+.edge.dependency { stroke-dasharray: 6 4; }
+.elabel { font-family: var(--mem-font); font-size: 10px; fill: var(--muted); }
+
+.mk-hollow { fill: var(--hollow); stroke: var(--line); stroke-width: 1; }
+.mk-solid { fill: var(--line); stroke: var(--line); stroke-width: 1; }
+.mk-open { fill: none; stroke: var(--line); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.lm-hollow { fill: var(--hollow); stroke: var(--lit); stroke-width: 1; }
+.lm-solid { fill: var(--lit); stroke: var(--lit); stroke-width: 1; }
+.lm-open { fill: none; stroke: var(--lit); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+
+#board[data-detail="far"] .cls, #board[data-detail="far"] .edge-class, #board[data-detail="far"] .pkg-title { display: none; }
+#board[data-detail="far"] .pkg-big, #board[data-detail="far"] .pkg-sub { display: block; }
+#board:not([data-detail="far"]) .edge-pkg { display: none; }
+#board[data-detail="mid"] .members, #board[data-detail="mid"] .elabel { display: none; }
+#board[data-detail="close"] .summary { display: none; }
+#board[data-detail="far"] .pkg-body { stroke-width: 2; }
+
+#board.has-sel .dimmable { opacity: var(--dim); }
+#board.has-sel .dimmable.keep { opacity: 1; }
+.cls { cursor: pointer; }
+.cls.sel .box { stroke: var(--sel); stroke-width: var(--sel-w); }
+.cls.near .box { stroke: var(--lit); stroke-width: var(--lit-w); }
+body[data-look="b"] .cls.near .box { stroke: #E7E5DF; }
+.edge.lit { stroke: var(--lit); stroke-width: var(--lit-w); }
+
+#bar { position: fixed; left: 0; right: 0; top: 0; height: 40px; background: var(--bg); border-bottom: 1px solid var(--panel-line); z-index: 2; display: flex; align-items: center; gap: 10px; padding: 0 16px; pointer-events: none; font-family: var(--ui-font); }
+#bar > * { pointer-events: auto; }
+#bar h1 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+body[data-look="b"] #bar h1 { font-family: "Routed Gothic", sans-serif; font-weight: 400; font-size: 16px; letter-spacing: 0.14em; }
+.btn { font: inherit; background: var(--bg); color: var(--ink); border: 1px solid var(--panel-line); width: 28px; height: 26px; padding: 0; cursor: pointer; border-radius: 0; }
+body[data-look="a"] .btn { border-color: var(--ink); }
+.btn.on { background: var(--btn-on-bg); color: var(--btn-on-ink); }
+#lookname { color: var(--muted); letter-spacing: 0.06em; }
+#zoomread { margin-left: auto; color: var(--muted); }
+#hint { color: var(--muted); }
+
+#panel { position: fixed; top: 41px; right: 0; width: 320px; bottom: 28px; background: var(--panel); border-left: 1px solid var(--panel-line); padding: 16px; overflow: auto; display: none; font-family: var(--mem-font); font-size: 12px; line-height: 1.55; }
+#panel.open { display: block; }
+#panel h2 { margin: 0 0 4px; font-family: var(--name-font); font-weight: var(--name-weight); text-transform: var(--name-tt); letter-spacing: var(--name-ls); font-size: 18px; }
+#panel .where { color: var(--muted); margin-bottom: 12px; word-break: break-all; }
+#panel h3 { margin: 14px 0 4px; font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; border-top: 1px solid var(--panel-line); padding-top: 8px; }
+#panel ul { list-style: none; margin: 0; padding: 0; }
+#panel li { white-space: pre-wrap; word-break: break-all; }
+#panel .kind { color: var(--muted); }
+
+#mini { position: fixed; left: 16px; bottom: 44px; width: 200px; height: 130px; background: var(--panel); border: 1px solid var(--panel-line); cursor: pointer; }
+#mini .mp { fill: none; stroke: var(--line); stroke-width: 1; }
+#mini .mc { fill: var(--muted); opacity: 0.55; }
+#mini .mc.sel { fill: var(--sel); opacity: 1; }
+#mini .mv { fill: none; stroke: var(--sel); stroke-width: 2; }
+body[data-look="a"] #mini .mv { stroke: var(--ink); }
+
+#foot { position: fixed; left: 0; right: 0; bottom: 0; height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-top: 1px solid var(--panel-line); background: var(--bg); color: var(--muted); font-size: 11px; font-family: var(--ui-font); }
+</style>
+</head>
+<body data-look="a">
+<svg id="board" xmlns="http://www.w3.org/2000/svg"><defs id="defs"></defs><g id="world"></g></svg>
+<div id="bar">
+  <h1>UML Board</h1>
+  <button class="btn" data-look="a">A</button><button class="btn" data-look="b">B</button><button class="btn" data-look="c">C</button>
+  <span id="lookname"></span>
+  <span id="hint">drag or scroll to pan · wheel or pinch to zoom · f fit · t look · esc clear</span>
+  <span id="zoomread"></span>
+</div>
+<svg id="mini" xmlns="http://www.w3.org/2000/svg"></svg>
+<aside id="panel"></aside>
+<div id="foot"><span>Read only model of arete: config, tracker, triage</span><span>Symbols: Mermaid (MIT), nomnoml (MIT)</span></div>
+<script>
+const MODEL = {"packages": ["config", "tracker", "triage"], "classes": [{"name": "Part", "package": "config", "bases": [], "fields": [{"name": "dir", "type": "str"}, {"name": "github", "type": "str"}], "methods": [], "path": "arete/config.py", "line": 104}, {"name": "Repo", "package": "config", "bases": [], "fields": [{"name": "name", "type": "str"}, {"name": "path", "type": "Path"}, {"name": "github", "type": "str"}, {"name": "pipeline", "type": "bool"}, {"name": "mine", "type": "bool"}, {"name": "public", "type": "bool"}, {"name": "tracker", "type": "Literal['github', 'jira', 'local']"}, {"name": "jira_project", "type": "str"}, {"name": "jira_label", "type": "str"}, {"name": "layer", "type": "Path | None"}, {"name": "parts", "type": "list[Part]"}, {"name": "jev", "type": "bool"}], "methods": [{"name": "layer_dir", "sig": "()", "ret": "Path"}], "path": "arete/config.py", "line": 110}, {"name": "JiraConfig", "package": "config", "bases": [], "fields": [{"name": "env_file", "type": "Path | None"}, {"name": "project", "type": "str"}, {"name": "transitions", "type": "dict[str, str]"}, {"name": "research", "type": "dict[str, str]"}, {"name": "landed", "type": "dict[str, str]"}, {"name": "auto", "type": "bool"}, {"name": "auto_per_refresh", "type": "int"}, {"name": "sprint_only", "type": "bool"}, {"name": "skip_types", "type": "list[str]"}], "methods": [], "path": "arete/config.py", "line": 137}, {"name": "Image", "package": "tracker", "bases": [], "fields": [{"name": "id", "type": "str"}, {"name": "name", "type": "str"}, {"name": "size", "type": "int"}], "methods": [], "path": "arete/tracker.py", "line": 45}, {"name": "SavedImages", "package": "tracker", "bases": [], "fields": [{"name": "paths", "type": "list[Path]"}, {"name": "left_out", "type": "list[str]"}], "methods": [], "path": "arete/tracker.py", "line": 52}, {"name": "Ticket", "package": "tracker", "bases": [], "fields": [{"name": "id", "type": "str"}, {"name": "ref", "type": "str"}, {"name": "title", "type": "str"}, {"name": "body", "type": "str"}, {"name": "comments", "type": "str"}, {"name": "open", "type": "bool"}, {"name": "kind", "type": "Literal['feat', 'fix']"}, {"name": "url", "type": "str"}, {"name": "created", "type": "str"}, {"name": "updated", "type": "str"}, {"name": "labels", "type": "list[str]"}, {"name": "blocker", "type": "str"}, {"name": "images", "type": "list[Image]"}, {"name": "github_repo", "type": "str"}], "methods": [], "path": "arete/tracker.py", "line": 66}, {"name": "GitHubTracker", "package": "tracker", "bases": [], "fields": [{"name": "repo", "type": "config.Repo"}], "methods": [{"name": "queue_hint", "sig": "()", "ret": "str"}, {"name": "label_name", "sig": "(state)", "ret": "str"}, {"name": "normalize", "sig": "(tid)", "ret": "str"}, {"name": "ref", "sig": "(tid)", "ret": "str"}, {"name": "open_agent_tickets", "sig": "()", "ret": "tuple[Ticket, ...]"}, {"name": "todo", "sig": "()", "ret": "list[Ticket]"}, {"name": "queued_failure", "sig": "(labels)", "ret": "bool"}, {"name": "failed_queue", "sig": "()", "ret": "list[str]"}, {"name": "by_owner", "sig": "(item)", "ret": "bool"}, {"name": "blocker", "sig": "(tid)", "ret": "str"}, {"name": "ticket_waits", "sig": "(tid, body)", "ret": "list[tuple[str, int]]"}, {"name": "wait_blocker", "sig": "(waits)", "ret": "str"}, {"name": "wait_is_open", "sig": "(ref)", "ret": "bool | None"}, {"name": "is_open", "sig": "(number)", "ret": "bool | None"}, {"name": "issue_open", "sig": "(repo, number)", "ret": "bool | None"}, {"name": "replied", "sig": "()", "ret": "list[Ticket]"}, {"name": "reply_since", "sig": "(tid, since)", "ret": "str"}, {"name": "save_images", "sig": "(t, dest)", "ret": "SavedImages"}, {"name": "get", "sig": "(tid)", "ret": "Ticket"}, {"name": "prepare", "sig": "()", "ret": "list[str]"}, {"name": "in_zte_queue", "sig": "(tid)", "ret": "bool"}, {"name": "require_ordinary", "sig": "(tid)", "ret": "None"}, {"name": "approve", "sig": "(tid)", "ret": "None"}, {"name": "label", "sig": "(tid, add, remove)", "ret": "str"}, {"name": "comment", "sig": "(tid, body)", "ret": "str"}, {"name": "move", "sig": "(tid, state)", "ret": "str"}, {"name": "pr_title", "sig": "(subject, t)", "ret": "str"}, {"name": "pr_link", "sig": "(t, whole)", "ret": "str"}], "path": "arete/tracker.py", "line": 150}, {"name": "JiraTracker", "package": "tracker", "bases": [], "fields": [{"name": "pr_labels", "type": "tuple[str, ...]"}, {"name": "repo", "type": "config.Repo"}, {"name": "cfg", "type": "config.JiraConfig"}], "methods": [{"name": "client", "sig": "()", "ret": "jira.Client"}, {"name": "queue_hint", "sig": "()", "ret": "str"}, {"name": "label_name", "sig": "(state)", "ret": "str"}, {"name": "normalize", "sig": "(tid)", "ret": "str"}, {"name": "ref", "sig": "(tid)", "ret": "str"}, {"name": "todo", "sig": "()", "ret": "list[Ticket]"}, {"name": "blocker", "sig": "(tid)", "ret": "str"}, {"name": "is_open", "sig": "(key)", "ret": "bool | None"}, {"name": "replied", "sig": "()", "ret": "list[Ticket]"}, {"name": "reply_since", "sig": "(tid, since)", "ret": "str"}, {"name": "get", "sig": "(tid)", "ret": "Ticket"}, {"name": "save_images", "sig": "(t, dest)", "ret": "SavedImages"}, {"name": "prepare", "sig": "()", "ret": "list[str]"}, {"name": "label", "sig": "(tid, add, remove)", "ret": "str"}, {"name": "comment", "sig": "(tid, body)", "ret": "str"}, {"name": "move", "sig": "(tid, state)", "ret": "str"}, {"name": "move_to", "sig": "(tid, target)", "ret": "str"}, {"name": "shift", "sig": "(tid, target, stamps, keep_done)", "ret": "Moved"}, {"name": "pr_title", "sig": "(subject, t)", "ret": "str"}, {"name": "pr_link", "sig": "(t, whole)", "ret": "str"}], "path": "arete/tracker.py", "line": 347}, {"name": "LocalTracker", "package": "tracker", "bases": [], "fields": [{"name": "pr_labels", "type": "tuple[str, ...]"}, {"name": "repo", "type": "config.Repo"}], "methods": [{"name": "queue_hint", "sig": "()", "ret": "str"}, {"name": "label_name", "sig": "(state)", "ret": "str"}, {"name": "normalize", "sig": "(tid)", "ret": "str"}, {"name": "ref", "sig": "(tid)", "ret": "str"}, {"name": "todo", "sig": "()", "ret": "list[Ticket]"}, {"name": "by_owner", "sig": "(item)", "ret": "bool"}, {"name": "blocker", "sig": "(tid)", "ret": "str"}, {"name": "replied", "sig": "()", "ret": "list[Ticket]"}, {"name": "reply_since", "sig": "(tid, since)", "ret": "str"}, {"name": "save_images", "sig": "(t, dest)", "ret": "SavedImages"}, {"name": "get", "sig": "(tid)", "ret": "Ticket"}, {"name": "prepare", "sig": "()", "ret": "list[str]"}, {"name": "approve", "sig": "(tid)", "ret": "None"}, {"name": "label", "sig": "(tid, add, remove)", "ret": "str"}, {"name": "comment", "sig": "(tid, body)", "ret": "str"}, {"name": "move", "sig": "(tid, state)", "ret": "str"}, {"name": "pr_title", "sig": "(subject, t)", "ret": "str"}, {"name": "pr_link", "sig": "(t, whole)", "ret": "str"}], "path": "arete/tracker.py", "line": 503}, {"name": "Candidate", "package": "triage", "bases": [], "fields": [{"name": "ref", "type": "str"}, {"name": "id", "type": "str"}, {"name": "title", "type": "str"}, {"name": "url", "type": "str"}, {"name": "updated", "type": "str"}, {"name": "in_sprint", "type": "bool | None"}, {"name": "parent", "type": "str"}], "methods": [], "path": "arete/triage.py", "line": 98}, {"name": "TicketText", "package": "triage", "bases": [], "fields": [{"name": "facts", "type": "str"}, {"name": "body", "type": "str"}, {"name": "comments", "type": "str"}, {"name": "updated", "type": "str"}, {"name": "labels", "type": "tuple[str, ...]"}, {"name": "title", "type": "str"}], "methods": [{"name": "text", "sig": "()", "ret": "str"}, {"name": "said", "sig": "(title)", "ret": "str"}, {"name": "thin", "sig": "()", "ret": "bool"}], "path": "arete/triage.py", "line": 109}, {"name": "Source", "package": "triage", "bases": [], "fields": [{"name": "key", "type": "str"}, {"name": "repos", "type": "list[config.Repo]"}, {"name": "tracker", "type": "ClassVar[str]"}], "methods": [{"name": "repos_text", "sig": "()", "ret": "str"}, {"name": "by_name", "sig": "()", "ret": "dict[str, config.Repo]"}, {"name": "ticket_text", "sig": "(c)", "ret": "str"}, {"name": "tid", "sig": "(ref)", "ret": "str"}, {"name": "candidate", "sig": "(r)", "ret": "Candidate"}], "path": "arete/triage.py", "line": 137}, {"name": "JiraSource", "package": "triage", "bases": ["Source"], "fields": [{"name": "jira_cfg", "type": "config.JiraConfig"}], "methods": [{"name": "name", "sig": "()", "ret": "str"}, {"name": "client", "sig": "()", "ret": "jira.Client"}, {"name": "candidates", "sig": "()", "ret": "list[Candidate]"}, {"name": "ticket", "sig": "(c)", "ret": "TicketText"}, {"name": "brief", "sig": "(key)", "ret": "str"}, {"name": "route_note", "sig": "(r)", "ret": "str"}, {"name": "repo_rule", "sig": "()", "ret": "str"}, {"name": "chosen_repos", "sig": "(answer)", "ret": "list[str]"}, {"name": "route", "sig": "(repo)", "ret": "str"}, {"name": "comment", "sig": "(ref, text)", "ret": "str | None"}, {"name": "find_comment", "sig": "(ref, marker)", "ret": "str"}, {"name": "approve", "sig": "(r)", "ret": "None"}], "path": "arete/triage.py", "line": 163}, {"name": "GitHubSource", "package": "triage", "bases": ["Source"], "fields": [], "methods": [{"name": "name", "sig": "()", "ret": "str"}, {"name": "issues", "sig": "()", "ret": "tracker.GitHubTracker"}, {"name": "candidates", "sig": "()", "ret": "list[Candidate]"}, {"name": "ticket", "sig": "(c)", "ret": "TicketText"}, {"name": "brief", "sig": "(key)", "ret": "str"}, {"name": "route_note", "sig": "(r)", "ret": "str"}, {"name": "repo_rule", "sig": "()", "ret": "str"}, {"name": "chosen_repos", "sig": "(answer)", "ret": "list[str]"}, {"name": "route", "sig": "(repo)", "ret": "str"}, {"name": "comment", "sig": "(ref, text)", "ret": "str | None"}, {"name": "find_comment", "sig": "(ref, marker)", "ret": "str"}, {"name": "approve", "sig": "(r)", "ret": "None"}], "path": "arete/triage.py", "line": 245}, {"name": "Triaged", "package": "triage", "bases": [], "fields": [{"name": "answered", "type": "dict[str, dict]"}, {"name": "failed", "type": "dict[str, str]"}, {"name": "waiting", "type": "list[str]"}, {"name": "spent", "type": "float"}, {"name": "calls", "type": "int"}, {"name": "screened", "type": "int"}], "methods": [], "path": "arete/triage.py", "line": 476}], "relationships": [{"kind": "composition", "from": "Repo", "to": "Part", "label": "parts"}, {"kind": "composition", "from": "Ticket", "to": "Image", "label": "images"}, {"kind": "association", "from": "GitHubTracker", "to": "Repo", "label": "repo"}, {"kind": "association", "from": "JiraTracker", "to": "Repo", "label": "repo"}, {"kind": "association", "from": "JiraTracker", "to": "JiraConfig", "label": "cfg"}, {"kind": "association", "from": "LocalTracker", "to": "Repo", "label": "repo"}, {"kind": "aggregation", "from": "Source", "to": "Repo", "label": "repos"}, {"kind": "generalization", "from": "JiraSource", "to": "Source"}, {"kind": "association", "from": "JiraSource", "to": "JiraConfig", "label": "jira_cfg"}, {"kind": "generalization", "from": "GitHubSource", "to": "Source"}, {"kind": "dependency", "from": "tracker", "to": "config", "level": "package"}, {"kind": "dependency", "from": "triage", "to": "config", "level": "package"}, {"kind": "dependency", "from": "triage", "to": "tracker", "level": "package"}]};
+const NS = "http://www.w3.org/2000/svg";
+const LOOKS = { a: "Plain UML", b: "Pattern", c: "Console" };
+const CW = 270, LINE = 15, HEAD = 30, PAD = 36, TABH = 26, COLGAP = 44, ROWGAP = 56, PKGGAP = 230, CAP = 7, CHARS = 38;
+const FAR = 0.5, CLOSE = 1.15;
+
+const board = document.getElementById("board");
+const world = document.getElementById("world");
+const defs = document.getElementById("defs");
+const mini = document.getElementById("mini");
+const panel = document.getElementById("panel");
+const view = { x: 0, y: 0, s: 1 };
+let selected = null;
+
+function el(name, attrs, parent, text) {
+  const n = document.createElementNS(NS, name);
+  for (const k in attrs || {}) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function cut(t) { return t.length > CHARS ? t.slice(0, CHARS - 1) + "…" : t; }
+
+function marker(id, cls, d, w, h, refX, refY, box) {
+  const m = el("marker", { id, markerWidth: w, markerHeight: h, refX, refY, orient: "auto", markerUnits: "userSpaceOnUse" }, defs);
+  if (box) m.setAttribute("viewBox", box);
+  el("path", { d, class: cls }, m);
+}
+for (const [suffix, pre] of [["", "mk-"], ["-lit", "lm-"]]) {
+  marker("tri" + suffix, pre + "hollow", "M 1,1 V 13 L18,7 Z", 20, 28, 18, 7);
+  marker("dia" + suffix, pre + "solid", "M 18,7 L9,13 L1,7 L9,1 Z", 20, 28, 1, 7);
+  marker("diah" + suffix, pre + "hollow", "M 18,7 L9,13 L1,7 L9,1 Z", 20, 28, 1, 7);
+  marker("open" + suffix, pre + "open", "M 1 1 L 11 6 L 1 11", 12, 12, 11, 6, "0 0 12 12");
+}
+
+const classes = MODEL.classes.map(c => ({ ...c }));
+const byName = Object.fromEntries(classes.map(c => [c.name, c]));
+const classRels = MODEL.relationships.filter(r => r.kind !== "dependency");
+const pkgRels = MODEL.relationships.filter(r => r.kind === "dependency");
+
+function depth(c) {
+  const b = c.bases.filter(x => byName[x]);
+  return b.length ? 1 + Math.max(...b.map(x => depth(byName[x]))) : 0;
+}
+classes.forEach(c => { c.depth = depth(c); });
+
+function members(c) {
+  const f = c.fields.map(x => ({ t: cut((x.name.startsWith("_") ? "- " : "+ ") + x.name + ": " + x.type) }));
+  const m = c.methods.map(x => ({ t: cut("+ " + x.name + x.sig + (x.ret ? ": " + x.ret : "")) }));
+  const trim = list => list.length > CAP ? [...list.slice(0, CAP), { t: "… " + (list.length - CAP) + " more", more: true }] : list;
+  return { f: trim(f), m: trim(m) };
+}
+function comp(list) { return list.length ? list.length * LINE + 12 : 12; }
+
+classes.forEach(c => { c.mem = members(c); c.w = CW; c.h = HEAD + comp(c.mem.f) + comp(c.mem.m); });
+
+const pkgs = MODEL.packages.map((name, i) => ({ name, i, classes: classes.filter(c => c.package === name) }));
+
+function orderLayer(list, pkgName) {
+  const bases = new Set(classes.flatMap(c => c.bases));
+  let out = [...list].sort((a, b) => (bases.has(a.name) ? 1 : 0) - (bases.has(b.name) ? 1 : 0) || a.line - b.line);
+  for (const r of classRels) {
+    if (r.kind !== "composition") continue;
+    const o = byName[r.from], p = byName[r.to];
+    if (o.package !== pkgName || p.package !== pkgName || !out.includes(o) || !out.includes(p)) continue;
+    out = out.filter(x => x !== p);
+    out.splice(out.indexOf(o) + 1, 0, p);
+  }
+  return out;
+}
+
+let cursorX = 0, rowCounter = 0;
+for (const p of pkgs) {
+  const maxDepth = Math.max(...p.classes.map(c => c.depth));
+  const rows = [];
+  for (let d = 0; d <= maxDepth; d++) {
+    const layer = orderLayer(p.classes.filter(c => c.depth === d), p.name);
+    if (d === 0) layer.forEach(c => rows.push([c]));
+    else for (let i = 0; i < layer.length; i += 2) rows.push(layer.slice(i, i + 2));
+  }
+  let y = TABH + PAD;
+  let innerW = 0;
+  for (const row of rows) {
+    const rh = Math.max(...row.map(c => c.h));
+    row.forEach((c, k) => { c.x = cursorX + PAD + k * (CW + COLGAP); c.y = y; c.row = rowCounter; c.rowH = rh; });
+    innerW = Math.max(innerW, row.length * CW + (row.length - 1) * COLGAP);
+    y += rh + ROWGAP;
+    rowCounter++;
+  }
+  p.x = cursorX; p.y = 0; p.w = innerW + PAD * 2 + 70; p.h = y - ROWGAP + PAD;
+  cursorX += p.w + PKGGAP;
+}
+const byPkg = Object.fromEntries(pkgs.map(p => [p.name, p]));
+const boardTop = -170, boardBottom = Math.max(...pkgs.map(p => p.h)) + 40, boardRight = cursorX - PKGGAP;
+const bounds = { x: -50, y: boardTop, w: boardRight + 100, h: boardBottom - boardTop + 20 };
+
+const lanes = {};
+function lane(key, base, step) { lanes[key] = (lanes[key] || 0) + 1; return base + (lanes[key] - 1) * step; }
+
+function sideRoute(e, a, b) {
+  if (e.apkg === e.bpkg) {
+    if (a.y === b.y) return { type: "h", sa: a.x < b.x ? "R" : "L", sb: a.x < b.x ? "L" : "R" };
+    if (Math.abs(a.row - b.row) === 1) return b.y < a.y ? { type: "v", sa: "T", sb: "B" } : { type: "v", sa: "B", sb: "T" };
+    return { type: "lane", sa: "R", sb: "R" };
+  }
+  const right = byPkg[e.bpkg].i > byPkg[e.apkg].i;
+  const adjacent = Math.abs(byPkg[e.bpkg].i - byPkg[e.apkg].i) === 1;
+  return { type: adjacent ? "gap" : "top", sa: right ? "R" : "L", sb: right ? "L" : "R" };
+}
+
+function planEdges(list, boxOf, pkgOf) {
+  const edges = list.map(r => {
+    const a = boxOf(r.from), b = boxOf(r.to);
+    const e = { r, a, b, apkg: pkgOf(r.from), bpkg: pkgOf(r.to) };
+    Object.assign(e, sideRoute(e, a, b));
+    return e;
+  });
+  const slots = {};
+  edges.forEach(e => {
+    (slots[e.r.from + e.sa] = slots[e.r.from + e.sa] || []).push({ e, end: "a" });
+    (slots[e.r.to + e.sb] = slots[e.r.to + e.sb] || []).push({ e, end: "b" });
+  });
+  for (const key in slots) {
+    const list2 = slots[key];
+    const horiz = key.endsWith("L") || key.endsWith("R");
+    const other = s => { const o = s.end === "a" ? s.e.b : s.e.a; return horiz ? o.y + o.h / 2 : o.x + o.w / 2; };
+    list2.sort((p, q) => other(p) - other(q));
+    list2.forEach((s, i) => { s.e["slot" + s.end] = (i - (list2.length - 1) / 2) * 15; });
+  }
+  return edges;
+}
+
+function point(box, side, slot) {
+  if (side === "L") return [box.x, box.y + box.h / 2 + slot];
+  if (side === "R") return [box.x + box.w, box.y + box.h / 2 + slot];
+  if (side === "T") return [box.x + box.w / 2 + slot, box.y];
+  return [box.x + box.w / 2 + slot, box.y + box.h];
+}
+
+function route(e, gapKey) {
+  const A = point(e.a, e.sa, e.slota), B = point(e.b, e.sb, e.slotb);
+  const pa = byPkg[e.apkg], pb = byPkg[e.bpkg];
+  if (e.type === "h") { const mx = (A[0] + B[0]) / 2; return [A, [mx, A[1]], [mx, B[1]], B]; }
+  if (e.type === "v") { const my = e.sa === "T" ? e.a.y - 26 : e.a.y + e.a.h + 26; return [A, [A[0], my], [B[0], my], B]; }
+  if (e.type === "lane") { const lx = lane("lane" + e.apkg, pa.x + pa.w - 46, 12); return [A, [lx, A[1]], [lx, B[1]], B]; }
+  if (e.type === "gap") {
+    const lo = Math.min(pa.i, pb.i), left = pkgs[lo];
+    const lx = lane("gap" + lo, left.x + left.w + 50, 14);
+    return [A, [lx, A[1]], [lx, B[1]], B];
+  }
+  const right = pb.i > pa.i;
+  const l1 = lane("gapa" + pa.name + (right ? "r" : "l"), right ? pa.x + pa.w + 28 : pa.x - 28, right ? 14 : -14);
+  const l2 = lane("gapb" + pb.name + (right ? "l" : "r"), right ? pb.x - 28 : pb.x + pb.w + 28, right ? -14 : 14);
+  const ty = lane("top", -50, -14);
+  return [A, [l1, A[1]], [l1, ty], [l2, ty], [l2, B[1]], B];
+}
+
+const pkgBox = n => byPkg[n];
+const pkgDeps = planEdges(pkgRels, pkgBox, n => n).map(e => {
+  if (e.type === "top") { e.type = "toppkg"; e.sa = "T"; e.sb = "T"; }
+  return e;
+});
+
+function routePkg(e) {
+  if (e.type !== "toppkg") return route(e);
+  const A = point(e.a, "T", e.slota * 2), B = point(e.b, "T", e.slotb * 2);
+  const ty = lane("pkgtop", -110, -16);
+  return [A, [A[0], ty], [B[0], ty], B];
+}
+
+const classEdges = planEdges(classRels, n => byName[n], n => byName[n].package);
+
+const gWorld = el("g", {}, world);
+const gPkg = el("g", {}, gWorld), gEdgeClass = el("g", {}, gWorld), gEdgePkg = el("g", {}, gWorld), gCls = el("g", {}, gWorld);
+
+for (const p of pkgs) {
+  const g = el("g", { class: "pkg", "data-pkg": p.name }, gPkg);
+  el("rect", { class: "pkg-body", x: p.x, y: p.y + TABH, width: p.w, height: p.h - TABH }, g);
+  p.tab = el("path", { class: "pkg-tab" }, g);
+  p.title = el("text", { class: "pkg-title", x: p.x + 12, y: p.y + 17 }, g, p.name);
+  el("text", { class: "pkg-big", x: p.x + p.w / 2, y: p.y + p.h / 2 - 10 }, g, p.name);
+  el("text", { class: "pkg-sub", x: p.x + p.w / 2, y: p.y + p.h / 2 + 30 }, g, p.classes.length + " classes");
+}
+
+function setTabs() {
+  for (const p of pkgs) {
+    const w = p.title.getComputedTextLength() + 24;
+    p.tab.setAttribute("d", `M ${p.x},${p.y + TABH} V ${p.y} H ${p.x + w} V ${p.y + TABH}`);
+  }
+}
+
+const edgeEls = [];
+function drawEdge(e, pts, parent, extraClass) {
+  const kind = e.r.kind;
+  const path = el("path", { class: "edge dimmable " + kind + " " + extraClass, d: "M " + pts.map(p => p.join(",")).join(" L ") }, parent);
+  const marks = {
+    generalization: { end: "tri" },
+    composition: { start: "dia" },
+    aggregation: { start: "diah" },
+    association: { end: "open" },
+    dependency: { end: "open" }
+  }[kind];
+  e.path = path; e.marks = marks;
+  setMarkers(e, false);
+  if (e.r.label) {
+    const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+    const horizontal = last[1] === prev[1];
+    const dir = horizontal ? Math.sign(prev[0] - last[0]) : 0;
+    const lx = horizontal ? last[0] + dir * (dir > 0 ? 18 : -18) : last[0] + 6;
+    const ly = horizontal ? last[1] - 5 : last[1] + (prev[1] > last[1] ? 26 : -26);
+    const t = el("text", { class: "elabel dimmable", x: lx, y: ly, "text-anchor": horizontal && dir < 0 ? "end" : "start" }, parent, e.r.label);
+    e.labelEl = t;
+  }
+}
+function setMarkers(e, lit) {
+  const s = lit ? "-lit" : "";
+  if (e.marks.start) e.path.setAttribute("marker-start", `url(#${e.marks.start}${s})`);
+  if (e.marks.end) e.path.setAttribute("marker-end", `url(#${e.marks.end}${s})`);
+}
+
+classEdges.forEach(e => drawEdge(e, route(e), gEdgeClass, "edge-class"));
+pkgDeps.forEach(e => drawEdge(e, routePkg(e), gEdgePkg, "edge-pkg"));
+
+for (const c of classes) {
+  const g = el("g", { class: "cls dimmable", transform: `translate(${c.x},${c.y})`, "data-name": c.name }, gCls);
+  c.g = g;
+  el("rect", { class: "box", x: 0, y: 0, width: c.w, height: c.h }, g);
+  el("rect", { class: "band", x: 0.5, y: 0.5, width: c.w - 1, height: HEAD - 1 }, g);
+  el("text", { class: "cname", x: c.w / 2, y: 20 }, g, c.name);
+  el("text", { class: "chip", x: c.w - 8, y: 20 }, g, c.fields.length + " F " + c.methods.length + " M");
+  el("line", { class: "divider", x1: 0, x2: c.w, y1: HEAD, y2: HEAD }, g);
+  const fy = HEAD + comp(c.mem.f);
+  el("line", { class: "divider", x1: 0, x2: c.w, y1: fy, y2: fy }, g);
+  const sum = el("g", { class: "summary" }, g);
+  el("text", { class: "summary", x: c.w / 2, y: HEAD + 22 }, sum, c.fields.length + (c.fields.length === 1 ? " field · " : " fields · ") + c.methods.length + (c.methods.length === 1 ? " method" : " methods"));
+  if (c.bases.length) el("text", { class: "summary", x: c.w / 2, y: HEAD + 42 }, sum, "extends " + c.bases.join(", "));
+  const mem = el("g", { class: "members" }, g);
+  c.mem.f.forEach((x, i) => el("text", { class: x.more ? "more" : "mem", x: 10, y: HEAD + 6 + (i + 1) * LINE - 3 }, mem, x.t));
+  c.mem.m.forEach((x, i) => el("text", { class: x.more ? "more" : "mem", x: 10, y: fy + 6 + (i + 1) * LINE - 3 }, mem, x.t));
+}
+
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+function select(name) {
+  selected = name;
+  const lit = new Set([name]);
+  classEdges.forEach(e => {
+    const on = name && (e.r.from === name || e.r.to === name);
+    e.path.classList.toggle("lit", !!on);
+    e.path.classList.toggle("keep", !!on);
+    if (e.labelEl) e.labelEl.classList.toggle("keep", !!on);
+    setMarkers(e, !!on);
+    if (on) { lit.add(e.r.from); lit.add(e.r.to); }
+  });
+  board.classList.toggle("has-sel", !!name);
+  classes.forEach(c => {
+    c.g.classList.toggle("sel", c.name === name);
+    c.g.classList.toggle("near", c.name !== name && lit.has(c.name));
+    c.g.classList.toggle("keep", lit.has(c.name));
+  });
+  pkgs.forEach(p => {});
+  drawMini();
+  if (!name) { panel.classList.remove("open"); return; }
+  const c = byName[name];
+  const rels = classRels.filter(r => r.from === name || r.to === name).map(r => {
+    const out = r.from === name;
+    return `<li><span class="kind">${r.kind}${r.label ? " " + esc(r.label) : ""}</span> ${out ? "to" : "from"} ${esc(out ? r.to : r.from)}</li>`;
+  }).join("");
+  panel.innerHTML = `<h2>${esc(c.name)}</h2><div class="where">${esc(c.path)}:${c.line}</div>` +
+    (c.bases.length ? `<h3>Bases</h3><ul><li>${esc(c.bases.join(", "))}</li></ul>` : "") +
+    `<h3>Fields (${c.fields.length})</h3><ul>${c.fields.map(f => `<li>${esc(f.name)}: ${esc(f.type)}</li>`).join("") || "<li>none</li>"}</ul>` +
+    `<h3>Methods (${c.methods.length})</h3><ul>${c.methods.map(m => `<li>${esc(m.name + m.sig + (m.ret ? ": " + m.ret : ""))}</li>`).join("") || "<li>none</li>"}</ul>` +
+    `<h3>Links</h3><ul>${rels || "<li>none</li>"}</ul>`;
+  panel.classList.add("open");
+}
+
+function apply() {
+  world.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.s})`);
+  board.dataset.detail = view.s < FAR ? "far" : view.s < CLOSE ? "mid" : "close";
+  document.getElementById("zoomread").textContent = Math.round(view.s * 100) + " percent · " + board.dataset.detail;
+  drawMini();
+}
+function size() { const r = board.getBoundingClientRect(); return { w: r.width, h: r.height }; }
+function fit() {
+  const { w, h } = size();
+  const m = 30, avail = panel.classList.contains("open") ? w - 320 : w;
+  const s = Math.min((avail - m * 2) / bounds.w, (h - m * 2) / bounds.h);
+  view.s = s;
+  view.x = (avail - bounds.w * s) / 2 - bounds.x * s;
+  view.y = (h - bounds.h * s) / 2 - bounds.y * s;
+  apply();
+}
+function zoomAt(mx, my, f) {
+  const s = Math.min(4, Math.max(0.1, view.s * f));
+  view.x = mx - (mx - view.x) * s / view.s;
+  view.y = my - (my - view.y) * s / view.s;
+  view.s = s;
+  apply();
+}
+
+board.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  const r = board.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const mouse = ev.deltaMode !== 0 || (ev.deltaX === 0 && Number.isInteger(ev.deltaY) && Math.abs(ev.deltaY) >= 50);
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) zoomAt(mx, my, Math.exp(-ev.deltaY * (ev.ctrlKey ? 0.01 : 0.004)));
+  else if (mouse) zoomAt(mx, my, Math.exp(-ev.deltaY * 0.0015 * (ev.deltaMode === 1 ? 20 : 1)));
+  else { view.x -= ev.deltaX; view.y -= ev.deltaY; apply(); }
+}, { passive: false });
+
+let drag = null;
+board.addEventListener("pointerdown", ev => {
+  board.setPointerCapture(ev.pointerId);
+  drag = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y, moved: false, target: ev.target };
+});
+board.addEventListener("pointermove", ev => {
+  if (!drag) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; board.classList.add("drag"); }
+  if (drag.moved) { view.x = drag.vx + dx; view.y = drag.vy + dy; apply(); }
+});
+board.addEventListener("pointerup", ev => {
+  if (drag && !drag.moved) {
+    const hit = drag.target.closest && drag.target.closest(".cls");
+    select(hit ? hit.dataset.name : null);
+  }
+  drag = null;
+  board.classList.remove("drag");
+});
+
+function drawMini() {
+  const W = 200, H = 130, k = Math.min((W - 10) / bounds.w, (H - 10) / bounds.h);
+  const ox = (W - bounds.w * k) / 2 - bounds.x * k, oy = (H - bounds.h * k) / 2 - bounds.y * k;
+  mini.innerHTML = "";
+  mini._k = k; mini._ox = ox; mini._oy = oy;
+  pkgs.forEach(p => el("rect", { class: "mp", x: ox + p.x * k, y: oy + p.y * k, width: p.w * k, height: p.h * k }, mini));
+  classes.forEach(c => el("rect", { class: "mc" + (c.name === selected ? " sel" : ""), x: ox + c.x * k, y: oy + c.y * k, width: c.w * k, height: c.h * k }, mini));
+  const { w, h } = size();
+  el("rect", { class: "mv", x: ox + (-view.x / view.s) * k, y: oy + (-view.y / view.s) * k, width: (w / view.s) * k, height: (h / view.s) * k }, mini);
+}
+mini.addEventListener("pointerdown", ev => {
+  const r = mini.getBoundingClientRect();
+  const bx = (ev.clientX - r.left - mini._ox) / mini._k, by = (ev.clientY - r.top - mini._oy) / mini._k;
+  const { w, h } = size();
+  view.x = w / 2 - bx * view.s; view.y = h / 2 - by * view.s;
+  apply();
+});
+
+async function setLook(k) {
+  document.body.dataset.look = k;
+  document.querySelectorAll("#bar .btn").forEach(b => b.classList.toggle("on", b.dataset.look === k));
+  document.getElementById("lookname").textContent = LOOKS[k];
+  try { await document.fonts.ready; } catch (e) {}
+  setTabs();
+  try { localStorage.setItem("umlLook", k); } catch (e) {}
+}
+document.querySelectorAll("#bar .btn").forEach(b => b.addEventListener("click", () => setLook(b.dataset.look)));
+document.addEventListener("keydown", ev => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (ev.key === "f") fit();
+  else if (ev.key === "t") { const ks = Object.keys(LOOKS); setLook(ks[(ks.indexOf(document.body.dataset.look) + 1) % ks.length]); }
+  else if (ev.key === "Escape") select(null);
+});
+window.addEventListener("resize", drawMini);
+
+let start = "a";
+try { start = localStorage.getItem("umlLook") || "a"; } catch (e) {}
+setLook(LOOKS[start] ? start : "a");
+fit();
+(function () {
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (q.get("look") && LOOKS[q.get("look")]) setLook(q.get("look"));
+  if (q.get("sel") && byName[q.get("sel")]) select(q.get("sel"));
+  if (q.get("zoom")) {
+    const c = byName[q.get("at") || q.get("sel")] || classes[0];
+    const { w, h } = size();
+    view.s = parseFloat(q.get("zoom"));
+    const open = panel.classList.contains("open") ? 320 : 0;
+    view.x = (w - open) / 2 - (c.x + c.w / 2) * view.s;
+    view.y = h / 2 - (c.y + c.h / 2) * view.s + (parseFloat(q.get("dy")) || 0);
+    apply();
+  }
+})();
+window.__board = { view, select, fit, setLook, apply, classes };
+</script>
+</body>
+</html>

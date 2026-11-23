@@ -1,0 +1,7 @@
+.plat/
+__pycache__/
+*.pyc
+/board.html
+.venv/
+plat/extractors/dotnet/bin/
+plat/extractors/dotnet/obj/

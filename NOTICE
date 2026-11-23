@@ -1,0 +1,9 @@
+Plat
+Copyright (c) 2026 Justin Barnett. MIT License, see LICENSE.
+
+Plat includes or adapts the following third party work.
+
+JetBrains Mono (plat/board/fonts/jbm-*.woff2)
+  Copyright 2020 The JetBrains Mono Project Authors
+  SIL Open Font License 1.1, see plat/board/fonts/OFL.txt
+  https://github.com/JetBrains/JetBrainsMono
