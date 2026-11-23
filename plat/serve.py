@@ -128,7 +128,7 @@ def handler_for(root: Path):
             editor = fresh_config(root).get("editor") or "code"
             try:
                 command = shlex.split(editor)
-                subprocess.run(
+                finished = subprocess.run(
                     [*command, str(root), "-g", f"{target}:{line}"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -136,9 +136,13 @@ def handler_for(root: Path):
                     timeout=EDITOR_TIMEOUT_SECONDS,
                 )
             except subprocess.TimeoutExpired:
-                pass
+                self.reply_json(504, {"error": f"editor '{editor}' did not finish within {EDITOR_TIMEOUT_SECONDS} seconds"})
+                return
             except (OSError, ValueError, IndexError) as problem:
                 self.reply_json(500, {"error": f"could not run editor '{editor}': {problem}"})
+                return
+            if finished.returncode != 0:
+                self.reply_json(500, {"error": f"editor '{editor}' exited with code {finished.returncode}"})
                 return
             self.reply_json(200, {"ok": True})
 
