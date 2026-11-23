@@ -1,0 +1,8 @@
+{
+  "name": "plat-web-extractor",
+  "private": true,
+  "dependencies": {
+    "typescript": "6.0.3",
+    "@vue/compiler-sfc": "3.5.46"
+  }
+}
