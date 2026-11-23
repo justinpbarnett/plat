@@ -553,6 +553,9 @@ def extract(root: Path, files: list[SourceFile]) -> dict:
         except SyntaxError as error:
             warnings.append(f"{source.path}:{error.lineno or 1}: {error.msg}")
             continue
+        except (ValueError, MemoryError, RecursionError) as error:
+            warnings.append(f"{source.path}: cannot parse: {error}")
+            continue
         except OSError as error:
             warnings.append(f"{source.path}: {error.strerror}")
             continue
