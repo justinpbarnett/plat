@@ -1,6 +1,6 @@
 import difflib
 import json
-import sys
+import re
 from pathlib import Path, PureWindowsPath
 from posixpath import normpath
 
@@ -20,7 +20,8 @@ GENERALIZATION_BASE_KINDS = {
     "enum": ["class", "enum"],
     "record": ["record"],
 }
-LANGUAGES = ["python", "typescript", "javascript", "vue", "csharp"]
+MODULE_LANGUAGES = ["python", "typescript", "javascript", "vue"]
+LANGUAGES = [*MODULE_LANGUAGES, "csharp"]
 ELEMENT_HIDDEN = ["test", "private", "dunder"]
 MEMBER_HIDDEN = ["private", "dunder"]
 VISIBILITIES = ["+", "-", "#", "~"]
@@ -28,8 +29,8 @@ MULTIPLICITIES = ["1", "0..1", "0..*"]
 DIRECTIONS = ["down", "right"]
 
 ELEMENT_KEYS = ["kind", "name", "parent", "language", "path", "line", "stereotypes", "abstract", "doc", "hidden", "members"]
-MEMBER_KEYS = ["kind", "name", "type", "params", "visibility", "static", "abstract", "hidden", "line"]
-RELATIONSHIP_KEYS = ["kind", "from", "to", "label", "multiplicity", "line"]
+MEMBER_KEYS = ["kind", "name", "type", "params", "visibility", "static", "abstract", "hidden", "path", "line"]
+RELATIONSHIP_KEYS = ["kind", "from", "to", "label", "multiplicity", "path", "line"]
 COMPONENT_KEYS = ["id", "name", "role", "packages"]
 LINK_KEYS = ["kind", "from", "to", "label"]
 OVERLAY_KEYS = ["components", "roles", "links", "hidden", "layout", "basis"]
@@ -53,31 +54,29 @@ def is_number(value) -> bool:
 
 
 class Problems:
-    def __init__(self, model: dict):
+    def __init__(self):
         self.found: list[str] = []
         self.elements: dict = {}
-        self.component_ids: list[str] = []
-        self.gone: set[str] = set()
-        self.model = model
+        self.component_ids: set[str] = set()
 
     def add(self, path: str, problem: str, fix: str, suggestion: str | None = None) -> None:
         guess = f' did you mean {quoted(suggestion)}?' if suggestion else ""
         self.found.append(f"{path}: {problem};{guess} {fix}")
 
-    def closest(self, value: str, candidates, cutoff: float = 0.8) -> str | None:
-        matches = difflib.get_close_matches(value, [candidate for candidate in candidates if candidate != value], n=1, cutoff=cutoff)
+    def closest(self, value: str, candidates) -> str | None:
+        matches = difflib.get_close_matches(value, candidates, n=1)
         return matches[0] if matches else None
 
     def missing_id(self, path: str, value, fix: str, candidates=None) -> None:
         if not isinstance(value, str):
             self.add(path, f"expected an element id string but found {quoted(value)}", fix)
             return
-        suggestion = self.closest(value, self.elements if candidates is None else candidates, cutoff=0.6)
+        suggestion = self.closest(value, self.elements if candidates is None else candidates)
         problem = "no element has this id"
-        if value in self.gone:
-            problem = "that element is gone, no element has this id now"
-        elif path.startswith("overlay."):
-            fix += " The element may be gone."
+        if not path.endswith(f"[{quoted(value)}]"):
+            problem += f" ({quoted(value)})"
+        if path.startswith("overlay."):
+            fix += " The element is gone."
         self.add(path, problem, fix, suggestion)
 
     def unknown_keys(self, path: str, value: dict, allowed: list[str]) -> None:
@@ -100,7 +99,8 @@ class Problems:
     def require_string(self, path: str, value, required: bool = True) -> bool:
         if isinstance(value, str) and (value or not required):
             return True
-        self.add(path, f"expected a non-empty string but found {quoted(value)}", "Set a string.")
+        expected = "a non-empty string" if required else "a string"
+        self.add(path, f"expected {expected} but found {quoted(value)}", "Set a string.")
         return False
 
     def require_choice(self, path: str, value, options: list[str]) -> bool:
@@ -140,19 +140,24 @@ def check_params(problems: Problems, path: str, params) -> None:
         if problems.require_dict(param_path, param):
             problems.unknown_keys(param_path, param, ["name", "type"])
             problems.require_string(f"{param_path}.name", param.get("name"))
-            if "type" in param:
+            if "type" not in param:
+                problems.add(f"{param_path}.type", "the key is missing", "Set the type, or use an empty string for an untyped parameter.")
+            else:
                 problems.require_string(f"{param_path}.type", param["type"], required=False)
 
 
-def check_member(problems: Problems, path: str, member) -> None:
+def check_member(problems: Problems, path: str, member, owner_kind) -> None:
     if not problems.require_dict(path, member):
         return
     problems.unknown_keys(path, member, MEMBER_KEYS)
-    problems.require_choice(f"{path}.kind", member.get("kind"), MEMBER_KINDS)
+    kind = member.get("kind")
+    problems.require_choice(f"{path}.kind", kind, MEMBER_KINDS)
+    if kind == "literal" and owner_kind != "enum":
+        problems.add(f"{path}.kind", "a literal is an enum value", "Use field or method, or move the literal to an enum.")
     problems.require_string(f"{path}.name", member.get("name"))
     if "type" in member:
         problems.require_string(f"{path}.type", member["type"], required=False)
-    if member.get("kind") == "method" or "params" in member:
+    if kind == "method" or "params" in member:
         if "params" not in member:
             problems.add(f"{path}.params", "a method needs params", "Add a list of {\"name\", \"type\"} objects, empty when there are none.")
         else:
@@ -164,24 +169,31 @@ def check_member(problems: Problems, path: str, member) -> None:
             problems.require_flag(f"{path}.{flag}", member[flag])
     if "hidden" in member:
         problems.require_choice(f"{path}.hidden", member["hidden"], MEMBER_HIDDEN)
+    if "path" in member:
+        check_source_path(problems, f"{path}.path", member["path"])
     if "line" in member:
         problems.require_line(f"{path}.line", member["line"])
 
 
 def check_parent(problems: Problems, element_id: str, path: str, element: dict) -> None:
+    parent_path = f"{path}.parent"
+    requires_package = element.get("kind") in CLASSIFIER_KINDS and element.get("language") != "csharp"
+    fix = "Set the id of the enclosing package." if requires_package else "Set the id of the enclosing package, or null at the top."
     if "parent" not in element:
-        problems.add(f"{path}.parent", "the key is missing", "Set the id of the enclosing package, or null at the top.")
+        problems.add(parent_path, "the key is missing", fix)
         return
     parent = element["parent"]
     if parent is None:
+        if requires_package:
+            problems.add(parent_path, "only classifiers in the C# global namespace can have a null parent", fix)
         return
     if not isinstance(parent, str) or parent not in problems.elements:
         candidates = (candidate for candidate in ids_of_kinds(problems, ["package"]) if candidate != element_id)
-        problems.missing_id(f"{path}.parent", parent, "Set the id of an existing package, or null at the top.", candidates)
+        problems.missing_id(parent_path, parent, fix, candidates)
         return
     if not is_package(problems, parent):
         kind = kind_of(problems, parent)
-        problems.add(f"{path}.parent", f"{quoted(parent)} is a {kind}, not a package", "Set the id of the enclosing package, or null at the top.")
+        problems.add(parent_path, f"{quoted(parent)} is a {kind}, not a package", fix)
 
 
 def check_parent_cycles(problems: Problems) -> None:
@@ -202,8 +214,49 @@ def check_source_path(problems: Problems, path: str, value) -> None:
     if not problems.require_string(path, value):
         return
     normalized = normpath(value)
-    if value.startswith("/") or "\\" in value or PureWindowsPath(value).drive or normalized == ".." or normalized.startswith("../"):
+    if value.startswith("/") or "\\" in value or "\0" in value or PureWindowsPath(value).drive or normalized == ".." or normalized.startswith("../"):
         problems.add(path, f"{quoted(value)} is not a repository-relative path with forward slashes", "Use a path from the repository root with forward slashes.")
+
+
+def enclosing_ids(problems: Problems, element_id: str, language) -> tuple[str | None, str | None]:
+    outer_id = None
+    prefix = element_id.rpartition(".")[0]
+    while prefix:
+        kind = kind_of(problems, prefix)
+        if kind == "package":
+            return outer_id, prefix
+        if outer_id is None and kind in CLASSIFIER_KINDS and (kind != "utility" or language == "csharp"):
+            if problems.elements[prefix].get("language") == language:
+                outer_id = prefix
+        prefix = prefix.rpartition(".")[0]
+    return outer_id, None
+
+
+def check_classifier_id(problems: Problems, path: str, element_id: str, element: dict) -> None:
+    parent, language, name = element["parent"], element.get("language"), element["name"]
+    if parent is None and language != "csharp":
+        return
+    outer_id, package_id = enclosing_ids(problems, element_id, language)
+    in_namespace = language == "csharp" and package_id is not None and problems.elements[package_id].get("language") in (None, "csharp")
+    if outer_id is not None:
+        outer = problems.elements[outer_id]
+        outer_parent = outer.get("parent")
+        global_outer = outer_parent is None and language == "csharp" and not in_namespace and "parent" in outer
+        packaged_outer = is_package(problems, outer_parent) and outer_id.startswith(f"{outer_parent}.")
+        if global_outer or packaged_outer:
+            if parent != outer_parent:
+                problems.add(f"{path}.parent", f"a nested type must share the package of {quoted(outer_id)}", f"Set it to {quoted(outer_parent)}.")
+            expected_name = element_id.removeprefix(f"{outer_parent}.") if packaged_outer else element_id
+            if name != expected_name:
+                problems.add(f"{path}.name", "a nested type must include the name of its outer type", f"Set it to {quoted(expected_name)}.")
+            return
+    if parent is None and in_namespace:
+        problems.add(f"{path}.parent", "a C# classifier in a namespace needs that namespace as its parent", f"Set it to {quoted(package_id)}.")
+        return
+
+    expected_id = f"{parent}.{name}" if parent is not None else name
+    if element_id != expected_id:
+        problems.add(path, "the classifier id must be its qualified name", f"Rename the key to {quoted(expected_id)} and update its references.")
 
 
 def check_element(problems: Problems, element_id: str, element) -> None:
@@ -213,10 +266,27 @@ def check_element(problems: Problems, element_id: str, element) -> None:
     if not problems.require_dict(path, element):
         return
     problems.unknown_keys(path, element, ELEMENT_KEYS)
-    problems.require_choice(f"{path}.kind", element.get("kind"), ELEMENT_KINDS)
-    problems.require_string(f"{path}.name", element.get("name"))
+    kind = element.get("kind")
+    problems.require_choice(f"{path}.kind", kind, ELEMENT_KINDS)
+    name = element.get("name")
+    valid_name = problems.require_string(f"{path}.name", name)
     check_parent(problems, element_id, path, element)
-    classifier = element.get("kind") in CLASSIFIER_KINDS
+    parent = element.get("parent")
+    package_parent = is_package(problems, parent)
+    classifier = kind in CLASSIFIER_KINDS
+    if kind == "utility" and element.get("language") in MODULE_LANGUAGES and package_parent:
+        expected_id = f"{parent}:utility"
+        if element_id != expected_id:
+            problems.add(path, "a module utility id must be its module id followed by :utility", f"Rename the key to {quoted(expected_id)} and update its references.")
+        module_name = problems.elements[parent].get("name")
+        if valid_name and isinstance(module_name, str) and module_name and name != module_name:
+            problems.add(f"{path}.name", "a module utility must use its module's name", f"Set it to {quoted(module_name)}.")
+    elif valid_name and kind == "package" and package_parent:
+        expected_id = f"{parent}.{name}"
+        if element_id != expected_id:
+            problems.add(path, "the child package id must be qualified by its parent", f"Rename the key to {quoted(expected_id)} and update its references.")
+    elif valid_name and classifier and (package_parent or ("parent" in element and parent is None)):
+        check_classifier_id(problems, path, element_id, element)
     for key in ("language", "path"):
         if key in element or classifier:
             if key not in element:
@@ -238,9 +308,12 @@ def check_element(problems: Problems, element_id: str, element) -> None:
         problems.require_string(f"{path}.doc", element["doc"], required=False)
     if "hidden" in element:
         problems.require_choice(f"{path}.hidden", element["hidden"], ELEMENT_HIDDEN)
-    if "members" in element and problems.require_list(f"{path}.members", element["members"]):
-        for index, member in enumerate(element["members"]):
-            check_member(problems, f"{path}.members[{index}]", member)
+    if "members" in element:
+        if kind == "package":
+            problems.add(f"{path}.members", "packages cannot have members", "Remove the key and put the members on a classifier.")
+        elif problems.require_list(f"{path}.members", element["members"]):
+            for index, member in enumerate(element["members"]):
+                check_member(problems, f"{path}.members[{index}]", member, kind)
 
 
 def check_relationship(problems: Problems, path: str, relationship, fix_ends: str) -> None:
@@ -265,10 +338,13 @@ def check_relationship(problems: Problems, path: str, relationship, fix_ends: st
             problems.missing_id(endpoint, relationship[end], fix_ends, ids_of_kinds(problems, kinds))
     if "label" in relationship:
         problems.require_string(f"{path}.label", relationship["label"], required=False)
-    if "multiplicity" in relationship:
-        problems.require_choice(f"{path}.multiplicity", relationship["multiplicity"], MULTIPLICITIES)
-    if "line" in relationship:
-        problems.require_line(f"{path}.line", relationship["line"])
+    if not is_link:
+        if "multiplicity" in relationship:
+            problems.require_choice(f"{path}.multiplicity", relationship["multiplicity"], MULTIPLICITIES)
+        if "path" in relationship:
+            check_source_path(problems, f"{path}.path", relationship["path"])
+        if "line" in relationship:
+            problems.require_line(f"{path}.line", relationship["line"])
 
 
 def fact_endpoint_kinds(kind: str, source_kind: str) -> tuple[list[str], list[str]]:
@@ -336,6 +412,14 @@ def check_facts(problems: Problems, facts) -> None:
     if not problems.require_dict("facts", facts):
         return
     problems.unknown_keys("facts", facts, FACTS_KEYS)
+    if "extracted" in facts:
+        problems.require_string("facts.extracted", facts["extracted"])
+    for key in ("files", "skipped"):
+        path = f"facts.{key}"
+        if key in facts and problems.require_dict(path, facts[key]):
+            for language, count in facts[key].items():
+                if not is_number(count) or count < 0:
+                    problems.add(f"{path}[{quoted(language)}]", f"expected a file count but found {quoted(count)}", "Set a non-negative integer.")
     elements = facts.get("elements")
     if not problems.require_dict("facts.elements", elements):
         elements = {}
@@ -360,7 +444,7 @@ def check_role_text(problems: Problems, path: str, role) -> None:
 def check_components(problems: Problems, components) -> None:
     if not problems.require_list("overlay.components", components):
         return
-    first_owner: dict[str, str] = {}
+    first_owner: dict[str, int] = {}
     seen_ids: dict[str, int] = {}
     for index, component in enumerate(components):
         path = f"overlay.components[{index}]"
@@ -369,11 +453,13 @@ def check_components(problems: Problems, components) -> None:
         problems.unknown_keys(path, component, COMPONENT_KEYS)
         component_id = component.get("id")
         if problems.require_string(f"{path}.id", component_id):
+            if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", component_id):
+                problems.add(f"{path}.id", f"{quoted(component_id)} is not a slug", "Use lowercase letters and digits, separated by single hyphens if needed.")
             if component_id in seen_ids:
                 problems.add(f"{path}.id", f"{quoted(component_id)} is already the id of overlay.components[{seen_ids[component_id]}]", "Give each component its own short slug.")
             else:
                 seen_ids[component_id] = index
-                problems.component_ids.append(component_id)
+                problems.component_ids.add(component_id)
         problems.require_string(f"{path}.name", component.get("name"))
         if "role" in component:
             check_role_text(problems, f"{path}.role", component["role"])
@@ -390,9 +476,9 @@ def check_components(problems: Problems, components) -> None:
                 kind = kind_of(problems, package_id)
                 problems.add(package_path, f"{quoted(package_id)} is a {kind}, not a package", "List packages only.")
                 continue
-            if package_id in first_owner and first_owner[package_id] != component_id:
-                problems.add(package_path, f"{quoted(package_id)} already belongs to component {quoted(first_owner[package_id])}", "Keep a package in one component only.")
-            first_owner.setdefault(package_id, component_id)
+            owner = first_owner.setdefault(package_id, index)
+            if owner != index:
+                problems.add(package_path, f"{quoted(package_id)} already belongs to overlay.components[{owner}]", "Keep a package in one component only.")
             parent = problems.elements[package_id].get("parent")
             if first_parent_package is None:
                 first_parent_package = (package_id, parent)
@@ -407,13 +493,12 @@ def check_components(problems: Problems, components) -> None:
 def check_roles(problems: Problems, roles) -> None:
     if not problems.require_dict("overlay.roles", roles):
         return
-    known = set(problems.elements) | set(problems.component_ids)
+    known = problems.elements.keys() | problems.component_ids
     for key, role in roles.items():
         path = f"overlay.roles[{quoted(key)}]"
         if key not in known:
             problems.missing_id(path, key, "Fix the key or remove the entry.", known)
-        else:
-            check_role_text(problems, path, role)
+        check_role_text(problems, path, role)
 
 
 def check_links(problems: Problems, links) -> None:
@@ -423,11 +508,11 @@ def check_links(problems: Problems, links) -> None:
         check_relationship(problems, f"overlay.links[{index}]", link, "Fix the id or remove the link.")
 
 
-def check_hidden(problems: Problems, hidden) -> None:
+def check_hidden(problems: Problems, hidden, *, allow_gone: bool = False) -> None:
     if not problems.require_list("overlay.hidden", hidden):
         return
     for index, element_id in enumerate(hidden):
-        if not isinstance(element_id, str) or element_id not in problems.elements:
+        if not isinstance(element_id, str) or (not allow_gone and element_id not in problems.elements):
             problems.missing_id(f"overlay.hidden[{index}]", element_id, "Fix the id or remove it from the list.")
 
 
@@ -463,12 +548,7 @@ def check_basis(problems: Problems, basis) -> None:
 
 
 def check_overlay(problems: Problems, overlay) -> None:
-    if not problems.require_dict("overlay", overlay):
-        return
     problems.unknown_keys("overlay", overlay, OVERLAY_KEYS)
-    basis = overlay.get("basis")
-    if isinstance(basis, dict):
-        problems.gone = {key for key in basis if key not in problems.elements}
     if "components" in overlay:
         check_components(problems, overlay["components"])
     if "roles" in overlay:
@@ -483,18 +563,26 @@ def check_overlay(problems: Problems, overlay) -> None:
         check_basis(problems, overlay["basis"])
 
 
-def errors(model) -> list[str]:
+def check_base_model(model) -> Problems:
+    problems = Problems()
     if not isinstance(model, dict):
-        return [f"model: expected an object but found {quoted(model)}; Write the model as one JSON object with format, facts and overlay."]
-    problems = Problems(model)
-    problems.unknown_keys("model", model, MODEL_KEYS)
+        problems.add("$", f"expected an object but found {quoted(model)}", "Write the model as one JSON object with format, facts and overlay.")
+        return problems
+    problems.unknown_keys("", model, MODEL_KEYS)
     if model.get("format") != store.FORMAT:
         problems.add("format", f"expected {quoted(store.FORMAT)} but found {quoted(model.get('format'))}", f"Set it to {quoted(store.FORMAT)}.")
     check_facts(problems, model.get("facts"))
     if "overlay" in model:
-        check_overlay(problems, model["overlay"])
+        problems.require_dict("overlay", model["overlay"])
     else:
         problems.add("overlay", "the key is missing", 'Add "overlay": {}.')
+    return problems
+
+
+def errors(model) -> list[str]:
+    problems = check_base_model(model)
+    if isinstance(model, dict) and isinstance(model.get("overlay"), dict):
+        check_overlay(problems, model["overlay"])
     return problems.found
 
 
@@ -509,20 +597,34 @@ def counts_line(model: dict) -> str:
     return "ok: " + ", ".join(parts)
 
 
-def run(root: Path) -> int:
+def load_model(root: Path):
     path = store.model_path(root)
     try:
-        model = json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as broken:
-        print(f"{path}: not valid JSON at line {broken.lineno} column {broken.colno}: {broken.msg}; Fix the syntax or run plat extract.")
+        raise ValueError(f"{path}: not valid JSON at line {broken.lineno} column {broken.colno}: {broken.msg}; Fix the syntax or run plat extract.") from broken
+    except UnicodeDecodeError as broken:
+        raise ValueError(f"{path}: invalid UTF-8 at byte {broken.start}; Save the model as UTF-8 or run plat extract.") from broken
+    except OSError as broken:
+        raise ValueError(f"{path}: {broken.strerror}; Make the model readable or run plat extract.") from broken
+
+
+def print_errors(found: list[str], *, file=None) -> int:
+    for line in found[:MAX_SHOWN]:
+        print(line, file=file)
+    if len(found) > MAX_SHOWN:
+        print(f"... and {len(found) - MAX_SHOWN} more errors", file=file)
+    return 1
+
+
+def run(root: Path) -> int:
+    try:
+        model = load_model(root)
+    except ValueError as broken:
+        print(broken)
         return 1
     found = errors(model)
-    if not found:
-        print(counts_line(model))
-        return 0
-    for line in found[:MAX_SHOWN]:
-        print(line)
-    if len(found) > MAX_SHOWN:
-        print(f"... and {len(found) - MAX_SHOWN} more errors")
-    print(f"{len(found)} errors in {path}", file=sys.stderr)
-    return 1
+    if found:
+        return print_errors(found)
+    print(counts_line(model))
+    return 0

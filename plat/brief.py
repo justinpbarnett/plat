@@ -1,8 +1,9 @@
 import hashlib
 import json
+import sys
 from pathlib import Path
 
-from plat import store
+from plat import check, store
 
 MODEL_FORMAT_FILE = Path(__file__).with_name("model.md")
 REPLY_LINE = "Save your reply as JSON and run: plat enrich --reply <file>"
@@ -12,7 +13,7 @@ plat draws a codebase as UML on a read only board. Extractors own the facts (pac
 You own the overlay: the meaning that code cannot show. Fill it in from the facts below.
 
 Your task:
-- Give every element listed below a role: one line, 120 characters at most, that says what it is for.
+- Give each package marked [needs role] and each classifier block a role: one line, 120 characters at most, that says what it is for.
 - Group sibling packages that work as one part of the system into components (only when this brief lists packages).
 - Add links for relationships code cannot show, such as HTTP calls, queues, events or shared tables.
 - Hide noise: generated code, fixtures, vendored or legacy elements nobody needs on the board.
@@ -37,11 +38,11 @@ def facts_hash(element: dict) -> str:
         return value
 
     text = json.dumps(without_lines(element), sort_keys=True, ensure_ascii=False)
-    return hashlib.sha1(text.encode()).hexdigest()[:8]
+    return hashlib.sha1(text.encode("utf-8", errors="backslashreplace")).hexdigest()[:8]
 
 
 def overlay_section() -> str:
-    lines = MODEL_FORMAT_FILE.read_text().splitlines()
+    lines = MODEL_FORMAT_FILE.read_text(encoding="utf-8").splitlines()
     start = next(index for index, line in enumerate(lines) if line.strip() == "## Overlay")
     end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
     return "\n".join(lines[start:end]).strip()
@@ -93,7 +94,7 @@ def block(element_id: str, element: dict, relationships: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def package_tree(elements: dict) -> str:
+def package_tree(elements: dict, changed_packages: set[str]) -> str:
     children: dict = {}
     classes: dict = {}
     for element_id, element in elements.items():
@@ -107,25 +108,33 @@ def package_tree(elements: dict) -> str:
     def walk(parent, depth: int) -> None:
         for package_id in sorted(children.get(parent, [])):
             count = classes.get(package_id, 0)
-            lines.append(f"{'  ' * depth}{package_id} ({count} {'class' if count == 1 else 'classes'})")
+            status = "needs role" if package_id in changed_packages else "context"
+            lines.append(f"{'  ' * depth}{package_id} ({count} {'class' if count == 1 else 'classes'}) [{status}]")
             walk(package_id, depth + 1)
 
     walk(None, 0)
     return "\n".join(lines)
 
 
-def overlay_without_roles(overlay: dict) -> str:
-    shown = {key: value for key, value in overlay.items() if key != "roles"}
+def current_overlay(overlay: dict) -> str:
+    shown = {key: value for key, value in overlay.items() if key not in ("roles", "basis")}
     return json.dumps(shown, indent=1, ensure_ascii=False)
 
 
 def gone_lines(overlay: dict, elements: dict) -> list[str]:
+    gone_ids = overlay.get("basis", {}).keys() - elements.keys()
+    if not gone_ids:
+        return []
+    component_ids = {component["id"] for component in overlay.get("components", [])}
     roles = overlay.get("roles", {})
     lines = []
-    for element_id in sorted(overlay.get("basis", {})):
-        if element_id not in elements:
-            role = f' (role: "{roles[element_id]}")' if element_id in roles else ""
-            lines.append(f"- {element_id}{role}")
+    for element_id in sorted(gone_ids):
+        note = ""
+        if element_id in component_ids:
+            note = " (still a component id)"
+        elif element_id in roles:
+            note = f" (role: {check.quoted(roles[element_id])})"
+        lines.append(f"- {element_id}{note}")
     return lines
 
 
@@ -154,30 +163,54 @@ def batch(model: dict, config: dict, limit: int | None, everything: bool) -> tup
         outgoing.setdefault(relationship["from"], []).append(relationship)
 
     sections = [INTRO, "# Overlay format\n\n" + overlay_section(), "# Reply format\n\n" + REPLY_FORMAT]
-    sections.append("# Current overlay (roles left out)\n\n" + overlay_without_roles(overlay))
+    sections.append("# Current overlay\n\n" + current_overlay(overlay))
     work = ["# Work"]
     if gone:
         work.append(
             "These ids were in the last overlay pass and no element has them now. "
-            "If an id also no longer names a component, copy any role you want to keep to its replacement id in the reply. "
-            "Delete the old role key for that id from overlay.roles in .plat/model.json before applying the reply.\n"
+            "For each id that no longer names a component, copy any role you want to keep to its replacement id in the reply "
+            "and delete the old role key from overlay.roles in .plat/model.json before applying the reply.\n"
             + "\n".join(gone)
         )
     if changed_packages:
-        work.append("Package tree (class counts):\n" + package_tree(elements))
+        work.append("Package tree (class counts):\n" + package_tree(elements, set(changed_packages)))
     if chosen:
         work.append("Elements to give a role:")
         work.extend(block(element_id, elements[element_id], outgoing.get(element_id, [])) for element_id in chosen)
     else:
-        work.append("No elements need a role in this brief.")
+        work.append("No classifiers in this batch.")
     sections.append("\n\n".join(work))
     sections.append(f"{remaining} changed elements remain after this batch.\n\n{REPLY_LINE}")
     covered = changed_packages + chosen
-    return "\n\n".join(sections) + "\n", covered
+    text = "\n\n".join(sections) + "\n"
+    return text.encode("utf-8", errors="backslashreplace").decode("utf-8"), covered
+
+
+def input_errors(model) -> list[str]:
+    problems = check.check_base_model(model)
+    overlay = model.get("overlay") if isinstance(model, dict) else None
+    if isinstance(overlay, dict):
+        check.check_basis(problems, overlay.get("basis", {}))
+        check.check_hidden(problems, overlay.get("hidden", []), allow_gone=True)
+        problems.require_dict("overlay.roles", overlay.get("roles", {}))
+        components = overlay.get("components", [])
+        if problems.require_list("overlay.components", components):
+            for index, component in enumerate(components):
+                path = f"overlay.components[{index}]"
+                if problems.require_dict(path, component):
+                    problems.require_string(f"{path}.id", component.get("id"))
+    return problems.found
 
 
 def run(root: Path, limit: int | None = None, everything: bool = False) -> int:
-    model = store.load_model(root)
+    try:
+        model = check.load_model(root)
+    except ValueError as broken:
+        print(broken, file=sys.stderr)
+        return 1
+    found = input_errors(model)
+    if found:
+        return check.print_errors(found, file=sys.stderr)
     text, _ = batch(model, store.load_config(root), limit, everything)
     print(text, end="")
     return 0
