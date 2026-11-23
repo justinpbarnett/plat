@@ -78,7 +78,8 @@ The parent of a classifier is a package, or `null` for a C# type in the global n
 | `static` | no | `true` for a static or class level member, shown underlined |
 | `abstract` | no | `true` for an abstract member, shown in italics |
 | `hidden` | no | `private` or `dunder` |
-| `line` | no | Line of the declaration |
+| `path` | no | File path from the repo root when the member is declared in another file than its element, such as a second part of a C# partial class |
+| `line` | no | Line of the declaration, in the member's `path` when it has one, else in the element's file |
 
 Fields include properties. Methods include constructors.
 
@@ -93,7 +94,7 @@ Fields include properties. Methods include constructors.
 | `association` | The owner of a field | The type of that single field, not created by the owner |
 | `dependency` | A classifier, or a package | A classifier used only in signatures or bodies, or a package it imports or uses |
 
-`label` is the field name. `multiplicity` sits at the `to` end: `1`, `0..1` or `0..*`. `line` is the line in the `from` element's file. Between one pair of elements there is at most one relationship of each kind and label, and a dependency only when no stronger relationship joins that pair.
+`label` is the field name. `multiplicity` sits at the `to` end: `1`, `0..1` or `0..*`. `line` is the line in the relationship's `path` when it has one, else in the `from` element's file. A relationship has a `path` only when it is declared in another file than its `from` element. Between one pair of elements there is at most one relationship of each kind and label, and a dependency only when no stronger relationship joins that pair.
 
 ## Overlay
 
