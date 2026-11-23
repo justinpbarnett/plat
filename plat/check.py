@@ -2,7 +2,7 @@ import difflib
 import json
 import re
 from pathlib import Path, PureWindowsPath
-from posixpath import normpath
+from posixpath import dirname, normpath
 
 from plat import store
 
@@ -146,7 +146,7 @@ def check_params(problems: Problems, path: str, params) -> None:
                 problems.require_string(f"{param_path}.type", param["type"], required=False)
 
 
-def check_member(problems: Problems, path: str, member, owner_kind) -> None:
+def check_member(problems: Problems, path: str, member, owner_kind, owner_source) -> None:
     if not problems.require_dict(path, member):
         return
     problems.unknown_keys(path, member, MEMBER_KEYS)
@@ -170,7 +170,7 @@ def check_member(problems: Problems, path: str, member, owner_kind) -> None:
     if "hidden" in member:
         problems.require_choice(f"{path}.hidden", member["hidden"], MEMBER_HIDDEN)
     if "path" in member:
-        check_source_path(problems, f"{path}.path", member["path"])
+        check_source_override(problems, f"{path}.path", member["path"], owner_source)
     if "line" in member:
         problems.require_line(f"{path}.line", member["line"])
 
@@ -218,45 +218,73 @@ def check_source_path(problems: Problems, path: str, value) -> None:
         problems.add(path, f"{quoted(value)} is not a repository-relative path with forward slashes", "Use a path from the repository root with forward slashes.")
 
 
-def enclosing_ids(problems: Problems, element_id: str, language) -> tuple[str | None, str | None]:
+def check_source_override(problems: Problems, path: str, value, default) -> None:
+    check_source_path(problems, path, value)
+    if isinstance(value, str) and isinstance(default, str) and normpath(value) == normpath(default):
+        problems.add(path, "the path repeats the element's source file", "Remove the override; set it only for a declaration in a different file.")
+
+
+def package_can_enclose(package: dict, element: dict) -> bool:
+    language, package_language = element.get("language"), package.get("language")
+    if "csharp" in (language, package_language):
+        return language in (None, "csharp") and package_language in (None, "csharp")
+    source, package_source = element.get("path"), package.get("path")
+    if not isinstance(source, str) or not isinstance(package_source, str):
+        return True
+    source, package_source = normpath(source), normpath(package_source)
+    return package_source == (dirname(source) or ".") or (element["kind"] != "package" and package_source == source)
+
+
+def enclosing_ids(problems: Problems, element_id: str, element: dict) -> tuple[str | None, str | None]:
+    language, is_classifier = element.get("language"), element["kind"] != "package"
     outer_id = None
     prefix = element_id.rpartition(".")[0]
     while prefix:
         kind = kind_of(problems, prefix)
-        if kind == "package":
+        if kind == "package" and package_can_enclose(problems.elements[prefix], element):
             return outer_id, prefix
-        if outer_id is None and kind in CLASSIFIER_KINDS and (kind != "utility" or language == "csharp"):
+        if is_classifier and outer_id is None and kind in CLASSIFIER_KINDS and (kind != "utility" or language == "csharp"):
             if problems.elements[prefix].get("language") == language:
                 outer_id = prefix
         prefix = prefix.rpartition(".")[0]
     return outer_id, None
 
 
-def check_classifier_id(problems: Problems, path: str, element_id: str, element: dict) -> None:
+def check_enclosure(problems: Problems, path: str, element_id: str, element: dict, package_id, outer_id) -> None:
+    if element["parent"] != package_id:
+        problem = f"the enclosing package is {quoted(package_id)}"
+        if outer_id is not None:
+            problem = f"a nested type must share the package of {quoted(outer_id)}"
+        problems.add(f"{path}.parent", problem, f"Set it to {quoted(package_id)}.")
+    expected_name = element_id.removeprefix(f"{package_id}.") if package_id is not None else element_id
+    if element["name"] != expected_name:
+        problem = "a nested type must include the name of its outer type" if outer_id is not None else "the name must be relative to its enclosing package"
+        problems.add(f"{path}.name", problem, f"Set it to {quoted(expected_name)}.")
+
+
+def check_qualified_id(problems: Problems, path: str, element_id: str, element: dict) -> None:
     parent, language, name = element["parent"], element.get("language"), element["name"]
-    if parent is None and language != "csharp":
+    is_package_element = element["kind"] == "package"
+    if parent is None and not is_package_element and language != "csharp":
         return
-    outer_id, package_id = enclosing_ids(problems, element_id, language)
-    in_namespace = language == "csharp" and package_id is not None and problems.elements[package_id].get("language") in (None, "csharp")
+    outer_id, package_id = enclosing_ids(problems, element_id, element)
+    if package_id is not None:
+        check_enclosure(problems, path, element_id, element, package_id, outer_id)
+        return
     if outer_id is not None:
         outer = problems.elements[outer_id]
         outer_parent = outer.get("parent")
-        global_outer = outer_parent is None and language == "csharp" and not in_namespace and "parent" in outer
+        global_outer = outer_parent is None and language == "csharp" and "parent" in outer
         packaged_outer = is_package(problems, outer_parent) and outer_id.startswith(f"{outer_parent}.")
         if global_outer or packaged_outer:
-            if parent != outer_parent:
-                problems.add(f"{path}.parent", f"a nested type must share the package of {quoted(outer_id)}", f"Set it to {quoted(outer_parent)}.")
-            expected_name = element_id.removeprefix(f"{outer_parent}.") if packaged_outer else element_id
-            if name != expected_name:
-                problems.add(f"{path}.name", "a nested type must include the name of its outer type", f"Set it to {quoted(expected_name)}.")
+            check_enclosure(problems, path, element_id, element, outer_parent, outer_id)
             return
-    if parent is None and in_namespace:
-        problems.add(f"{path}.parent", "a C# classifier in a namespace needs that namespace as its parent", f"Set it to {quoted(package_id)}.")
+    if is_package_element and parent is None:
         return
-
     expected_id = f"{parent}.{name}" if parent is not None else name
     if element_id != expected_id:
-        problems.add(path, "the classifier id must be its qualified name", f"Rename the key to {quoted(expected_id)} and update its references.")
+        problem = "the child package id must be qualified by its parent" if is_package_element else "the classifier id must be its qualified name"
+        problems.add(path, problem, f"Rename the key to {quoted(expected_id)} and update its references.")
 
 
 def check_element(problems: Problems, element_id: str, element) -> None:
@@ -281,12 +309,8 @@ def check_element(problems: Problems, element_id: str, element) -> None:
         module_name = problems.elements[parent].get("name")
         if valid_name and isinstance(module_name, str) and module_name and name != module_name:
             problems.add(f"{path}.name", "a module utility must use its module's name", f"Set it to {quoted(module_name)}.")
-    elif valid_name and kind == "package" and package_parent:
-        expected_id = f"{parent}.{name}"
-        if element_id != expected_id:
-            problems.add(path, "the child package id must be qualified by its parent", f"Rename the key to {quoted(expected_id)} and update its references.")
-    elif valid_name and classifier and (package_parent or ("parent" in element and parent is None)):
-        check_classifier_id(problems, path, element_id, element)
+    elif valid_name and kind in ELEMENT_KINDS and (package_parent or ("parent" in element and parent is None)):
+        check_qualified_id(problems, path, element_id, element)
     for key in ("language", "path"):
         if key in element or classifier:
             if key not in element:
@@ -313,7 +337,7 @@ def check_element(problems: Problems, element_id: str, element) -> None:
             problems.add(f"{path}.members", "packages cannot have members", "Remove the key and put the members on a classifier.")
         elif problems.require_list(f"{path}.members", element["members"]):
             for index, member in enumerate(element["members"]):
-                check_member(problems, f"{path}.members[{index}]", member, kind)
+                check_member(problems, f"{path}.members[{index}]", member, kind, element.get("path"))
 
 
 def check_relationship(problems: Problems, path: str, relationship, fix_ends: str) -> None:
@@ -342,7 +366,10 @@ def check_relationship(problems: Problems, path: str, relationship, fix_ends: st
         if "multiplicity" in relationship:
             problems.require_choice(f"{path}.multiplicity", relationship["multiplicity"], MULTIPLICITIES)
         if "path" in relationship:
-            check_source_path(problems, f"{path}.path", relationship["path"])
+            source = relationship.get("from")
+            owner = problems.elements.get(source) if isinstance(source, str) else None
+            owner_source = owner.get("path") if isinstance(owner, dict) else None
+            check_source_override(problems, f"{path}.path", relationship["path"], owner_source)
         if "line" in relationship:
             problems.require_line(f"{path}.line", relationship["line"])
 
