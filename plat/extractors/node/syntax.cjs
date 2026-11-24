@@ -1,40 +1,72 @@
-const { ts, vue } = require("./parsers.cjs");
+const { ts, babel } = require("./parsers.cjs");
 
-const sharedGrammarErrors = new Set([
-  "AsyncFunctionInSingleStatementContext", "AwaitBindingIdentifier", "AwaitBindingIdentifierInStaticBlock",
-  "AwaitExpressionFormalParameter", "AwaitNotInAsyncContext", "AwaitUsingNotInAsyncContext",
-  "BadGetterArity", "BadSetterArity", "BadSetterRestParameter", "ConstructorIsAccessor",
-  "DeclarationMissingInitializer", "ForInOfLoopInitializer", "GeneratorInSingleStatementContext",
-  "IllegalBreakContinue", "IllegalReturn", "MixingCoalesceWithLogical", "NewlineAfterThrow",
-  "StrictFunction", "UnexpectedImportExport", "UnexpectedLexicalDeclaration",
+const typeScriptDeclarationErrors = new Set([
+  "DuplicateConstructor", "DuplicateDefaultExport", "DuplicateExport", "VarRedeclaration",
 ]);
-const runtimeClassGrammarError = /Private(?:Field|Name|In)|Super/;
 
 function isTypeScript(source) {
   return source.scriptKind === ts.ScriptKind.TS || source.scriptKind === ts.ScriptKind.TSX;
 }
 
-function parserGrammarError(source, sourceType) {
+function babelGrammar(source, sourceType, decorators) {
   const typed = isTypeScript(source);
-  const plugins = [typed ? "decorators-legacy" : "decorators", "decoratorAutoAccessors", "deprecatedImportAssert"];
-  if (typed) plugins.push(["typescript", { dts: source.isDeclarationFile }]);
+  const plugins = [decorators, "decoratorAutoAccessors", "deprecatedImportAssert"];
+  if (typed) plugins.push(["typescript", { dts: source.isDeclarationFile }], "deferredImportEvaluation");
   if (source.scriptKind !== ts.ScriptKind.TS) plugins.push("jsx");
-  const isGrammarError = error => {
+  const grammarError = error => {
     if (!(error instanceof SyntaxError) || !Number.isInteger(error.pos)) throw error;
-    const { reasonCode, pos } = error;
-    if (!typed || sharedGrammarErrors.has(reasonCode) || runtimeClassGrammarError.test(reasonCode)) return true;
-    return (reasonCode === "UnexpectedReservedWord" || reasonCode === "UnexpectedUsingDeclaration"
-      || reasonCode === "UnexpectedToken") && /^await\b/.test(source.text.slice(pos));
+    return !typed || !typeScriptDeclarationErrors.has(error.reasonCode);
   };
-  let errors;
   try {
-    ({ errors } = vue.babelParse(source.text, {
+    const { errors, program } = babel.parse(source.text, {
       sourceType, plugins, allowUndeclaredExports: true, errorRecovery: typed,
-    }));
+    });
+    return { error: errors.find(grammarError), sourceType: program.sourceType };
   } catch (error) {
-    errors = [error];
+    return { error: grammarError(error) ? error : undefined };
   }
-  return errors.find(isGrammarError);
+}
+
+function scriptGrammar(source, sourceType) {
+  if (sourceType === "unambiguous") {
+    const commonJs = babelGrammar(source, "commonjs", "decorators");
+    if (!commonJs.error) return { sourceType: "commonjs" };
+    const detected = babelGrammar(source, "unambiguous", "decorators");
+    return !detected.error && detected.sourceType === "module" ? detected : commonJs;
+  }
+  const grammar = babelGrammar(source, sourceType, "decorators");
+  if (grammar.error && isTypeScript(source) && source.text.includes("@")) {
+    const legacy = babelGrammar(source, sourceType, "decorators-legacy");
+    if (!legacy.error) return legacy;
+  }
+  return grammar;
+}
+
+function defaultValueExports(statement) {
+  if (ts.isExportAssignment(statement)) return statement.isExportEquals ? [] : [statement];
+  if (ts.isExportDeclaration(statement)) {
+    const clause = statement.exportClause;
+    if (statement.isTypeOnly || !clause) return [];
+    if (ts.isNamedExports(clause)) {
+      return clause.elements.filter(specifier => !specifier.isTypeOnly && specifier.name.text === "default");
+    }
+    return clause.name.text === "default" ? [clause] : [];
+  }
+  if (ts.isClassDeclaration(statement) || ts.isFunctionDeclaration(statement) && statement.body) {
+    const flags = modifiers(statement);
+    if (flags & ts.ModifierFlags.Default && !(flags & ts.ModifierFlags.Ambient)) return [statement];
+  }
+  return [];
+}
+
+function duplicateDefaultExport(source) {
+  let found = false;
+  for (const statement of source.statements) {
+    for (const site of defaultValueExports(statement)) {
+      if (found) return { position: site.getStart(source), message: "Duplicate export of 'default'" };
+      found = true;
+    }
+  }
 }
 
 function setupValueExport(statement) {
@@ -132,10 +164,12 @@ function invalidTypedAccessor(accessor) {
 }
 
 function invalidScriptGrammar(source, sourceType, setup) {
-  const diagnostic = parserGrammarError(source, sourceType);
-  if (diagnostic) return { position: diagnostic.pos, message: diagnostic.message.replace(/ \(\d+:\d+\)$/, "") };
-  const commonJsWrapper = sourceType === "commonjs";
   const typed = isTypeScript(source);
+  const duplicate = typed && duplicateDefaultExport(source);
+  if (duplicate) return duplicate;
+  const { error: diagnostic, sourceType: detected } = scriptGrammar(source, sourceType);
+  if (diagnostic) return { position: diagnostic.pos, message: diagnostic.message.replace(/ \(\d+:\d+\)$/, "") };
+  const commonJsWrapper = sourceType === "commonjs" || detected === "commonjs";
   function check(node) {
     if (typed && (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))) {
       const invalid = invalidTypedAccessor(node);
@@ -188,8 +222,13 @@ function modifiers(node) {
 function docOf(node) {
   const doc = ts.getJSDocCommentsAndTags(node).find(ts.isJSDoc);
   const text = ts.getTextOfJSDocComment(doc?.comment)?.replace(/\s+/g, " ").trim();
-  const end = text?.search(/[.!?](?=\s|$)/) ?? -1;
-  return end < 0 ? text : text.slice(0, end + 1);
+  if (!text) return text;
+  const abbreviation = /\b(?:(?:[a-z]\.){2,}|(?:Mr|Mrs|Ms|Dr|Prof|vs|cf)\.)$/i;
+  for (const { 0: mark, index } of text.matchAll(/[.!?]+(?=\s|$)/g)) {
+    const sentence = text.slice(0, index + mark.length);
+    if (mark !== "." || !abbreviation.test(sentence)) return sentence;
+  }
+  return text;
 }
 
 function unwrap(node) {

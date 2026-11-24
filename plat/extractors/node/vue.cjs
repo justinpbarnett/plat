@@ -110,10 +110,6 @@ function typeOfRuntimeProp(facts, node, seen = new Set()) {
   return { text: facts.typeText(type, node), types: [{ type }] };
 }
 
-function localLocation(file, declaration, fallback) {
-  return declaration?.getSourceFile() === file.source ? declaration : fallback;
-}
-
 function propsFromRuntime(facts, file, node, origin, add) {
   for (const [name, entry] of runtimeEntries(facts, node)) {
     const settings = objectValue(facts, entry.value);
@@ -121,9 +117,8 @@ function propsFromRuntime(facts, file, node, origin, add) {
       ? runtimeEntries(facts, settings) : undefined;
     const required = unwrap(options?.get("required")?.value)?.kind === ts.SyntaxKind.TrueKeyword;
     const { text, types } = typeOfRuntimeProp(facts, options ? options.get("type")?.value : entry.value);
-    const location = localLocation(file, entry.declaration, origin);
-    add({ kind: "field", name, visibility: "+", type: text, line: facts.line(file, location) },
-      types, { optional: !required });
+    const row = facts.locateMember(file, { kind: "field", name, visibility: "+", type: text }, entry.declaration, origin);
+    add(row, types, { optional: !required });
   }
 }
 
@@ -145,19 +140,20 @@ function propsFromType(facts, file, node, add) {
   }
   for (const [name, choices] of properties) {
     const optional = choices.length !== alternatives.length || choices.some(choice => choice.optional);
-    const local = choices.find(choice => choice.declaration?.getSourceFile() === file.source);
+    const location = choices.find(choice => choice.declaration?.getSourceFile() === file.source)
+      ?? choices.find(choice => choice.declaration);
     const texts = new Set(choices.map(({ type, annotation }) => annotation?.getText() ?? facts.typeText(type, node)));
     const common = texts.size > 1 && props.getProperty(name);
     const text = texts.size === 1 ? texts.values().next().value
       : common ? facts.typeText(checker.getTypeOfSymbolAtLocation(common, node), node)
       : [...new Set(choices.map(({ type }) => checker.typeToString(type, node, ts.TypeFormatFlags.InElementType)))].join(" | ");
-    add({ kind: "field", name, visibility: "+", line: facts.line(file, local?.declaration ?? node), type: text },
-      choices, { optional });
+    const row = facts.locateMember(file, { kind: "field", name, visibility: "+", type: text }, location?.declaration, node);
+    add(row, choices, { optional });
   }
 }
 
-function event(facts, file, name, location, params = [], type = "void") {
-  return { kind: "method", name, visibility: "+", line: facts.line(file, location), params, type };
+function event(facts, file, name, declaration, fallback, params = [], type = "void") {
+  return facts.locateMember(file, { kind: "method", name, visibility: "+", params, type }, declaration, fallback);
 }
 
 function emitsFromType(facts, file, node, add) {
@@ -174,16 +170,15 @@ function emitsFromVariant(facts, file, type, node, add) {
     const names = facts.checker.getTypeOfSymbolAtLocation(eventName, node);
     const events = (names.isUnion() ? names.types : [names]).filter(name => name.isStringLiteral());
     if (!events.length) continue;
-    const location = localLocation(file, signature.declaration, node);
     const { params, type: result } = facts.signatureMembers(signature, node, 1);
-    for (const name of events) add(event(facts, file, name.value, location, params, result));
-    facts.typeDependencies(file.module, facts.line(file, location), facts.signatureTypes(signature));
+    const rows = events.map(name => event(facts, file, name.value, signature.declaration, node, params, result));
+    for (const row of rows) add(row);
+    facts.typeDependencies(file.module, rows[0].line, facts.signatureTypes(signature), undefined, rows[0].path);
   }
   for (const property of type.getProperties()) {
     const tuple = facts.checker.getTypeOfSymbolAtLocation(property, node);
     if (!facts.checker.isTupleType(tuple)) continue;
     const declaration = property.valueDeclaration ?? property.declarations?.[0];
-    const location = localLocation(file, declaration, node);
     const items = facts.checker.getTypeArguments(tuple);
     const params = items.map((item, index) => {
       const label = tuple.target.labeledElementDeclarations?.[index];
@@ -194,9 +189,9 @@ function emitsFromVariant(facts, file, type, node, add) {
         : annotation?.getText() ?? facts.typeText(item, node);
       return { name: nameOf(label?.name) ?? `arg${index + 1}`, type };
     });
-    const row = event(facts, file, property.name, location, params);
+    const row = event(facts, file, property.name, declaration, node, params);
     add(row);
-    facts.typeDependencies(file.module, row.line, items);
+    facts.typeDependencies(file.module, row.line, items, undefined, row.path);
   }
 }
 
@@ -220,13 +215,12 @@ function emitsFromRuntime(facts, file, node, origin, add) {
     let signatures = callSignatures(facts, property && facts.checker.getTypeOfSymbolAtLocation(property, node));
     if (!signatures.length) signatures = validatorSignatures(facts, validator);
     if (!signatures.length) signatures = validatorSignatures(facts, runtimeValue(facts, validator));
-    const location = localLocation(file, declaration, origin);
     const [signature] = signatures;
-    const params = signature ? facts.signatureMembers(signature, location).params : [];
-    const row = event(facts, file, name, location, params);
+    const params = signature ? facts.signatureMembers(signature, declaration).params : [];
+    const row = event(facts, file, name, declaration, origin, params);
     add(row);
     for (const effective of signatures) {
-      facts.typeDependencies(file.module, row.line, facts.signatureTypes(effective));
+      facts.typeDependencies(file.module, row.line, facts.signatureTypes(effective), undefined, row.path);
     }
   }
 }
@@ -263,11 +257,11 @@ function vueMembers(facts, file) {
   const element = facts.elements[id];
   const members = new Map();
   const add = (row, type, fieldOptions) => {
-    const key = JSON.stringify([row.kind, row.name]);
+    const key = JSON.stringify([row.kind, row.name, row.visibility]);
     const previous = members.get(key);
-    if (!previous || previous[0].row.visibility === "-" && row.visibility === "+") {
+    if (!previous) {
       members.set(key, [{ row, type, fieldOptions }]);
-    } else if (row.kind === "method" && row.visibility === "+" && previous[0].row.visibility === "+") {
+    } else if (row.kind === "method" && row.visibility === "+") {
       const signature = JSON.stringify([row.params, row.type]);
       if (!previous.some(item => JSON.stringify([item.row.params, item.row.type]) === signature)) {
         previous.push({ row, type, fieldOptions });
@@ -337,7 +331,7 @@ function vueMembers(facts, file) {
       if (type) facts.fieldLinks(file, id, row, type, fieldOptions);
     }
   }
-  element.members.sort((left, right) => left.line - right.line);
+  facts.sortMembers(element.members);
 }
 
 function vueImportDependencies(facts, file, node, imported, line) {

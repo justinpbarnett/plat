@@ -54,6 +54,8 @@ function* constructions(value) {
   } else if (ts.isConditionalExpression(expression)) {
     yield* constructions(expression.whenTrue);
     yield* constructions(expression.whenFalse);
+  } else if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    yield* constructions(expression.right);
   }
 }
 
@@ -61,7 +63,12 @@ class Facts {
   constructor({ program, importedFile, files }) {
     this.program = program;
     this.importedFile = importedFile;
-    this.sources = new Set(files.map(file => file.source));
+    this.sources = new Map(files.map(file => [file.source, file]));
+    this.scriptOffsets = new WeakMap();
+    this.memberOffsets = new WeakMap();
+    for (const file of files) {
+      for (const { statement, offset } of file.scripts ?? []) this.scriptOffsets.set(statement, offset);
+    }
     this.checker = program.getTypeChecker();
     this.elements = Object.create(null);
     this.usedIds = new Set();
@@ -204,6 +211,42 @@ class Facts {
     return file.line(position(node));
   }
 
+  memberLocation(file, node) {
+    if (!node) return;
+    if (file.location) return file.location(node);
+    const owner = this.sources.get(node.getSourceFile());
+    if (owner) return { line: this.line(owner, node), ...(owner !== file && { path: owner.path }) };
+  }
+
+  memberOffset(node) {
+    const start = position(node);
+    if (this.sources.get(node.getSourceFile())?.scripts) {
+      for (let statement = node; statement; statement = statement.parent) {
+        const original = this.scriptOffsets.get(statement);
+        if (original !== undefined) return original + start - position(statement);
+      }
+    }
+    return start;
+  }
+
+  locateMember(file, row, declaration, fallback) {
+    const declared = this.memberLocation(file, declaration);
+    const location = declared ?? this.memberLocation(file, fallback);
+    row.line = location?.line ?? this.line(file, fallback);
+    if (location?.path && location.path !== file.path) row.path = location.path;
+    this.memberOffsets.set(row, this.memberOffset(declared ? declaration : fallback));
+    return row;
+  }
+
+  sortMembers(rows) {
+    rows.sort((left, right) => {
+      const from = left.path ?? "";
+      const to = right.path ?? "";
+      if (from !== to) return from < to ? -1 : 1;
+      return left.line - right.line || this.memberOffsets.get(left) - this.memberOffsets.get(right);
+    });
+  }
+
   aliasIsObject(type) {
     if (type.isUnionOrIntersection()) return type.types.every(item => this.aliasIsObject(item));
     return Boolean(type.flags & ts.TypeFlags.Object) && !this.checker.isArrayType(type)
@@ -306,7 +349,8 @@ class Facts {
     const name = details.name ?? nameOf(node.name) ?? "constructor";
     const access = details.visibility ?? visibility(node);
     const flags = modifiers(node);
-    const row = { kind: details.kind, name, visibility: access, line: this.line(file, details.location ?? node) };
+    const row = this.locateMember(file, { kind: details.kind, name, visibility: access },
+      details.location ?? node, details.fallback ?? node);
     if (access === "-") row.hidden = "private";
     if (details.static || flags & ts.ModifierFlags.Static) row.static = true;
     if (flags & ts.ModifierFlags.Abstract) row.abstract = true;
@@ -395,10 +439,10 @@ class Facts {
     return targets;
   }
 
-  typeDependencies(id, line, types, excluded) {
+  typeDependencies(id, line, types, excluded, sourcePath) {
     for (const type of types) {
       for (const target of this.typeTargets(type)) {
-        if (!excluded?.has(target)) this.add("dependency", id, target, line);
+        if (!excluded?.has(target)) this.add("dependency", id, target, line, undefined, undefined, sourcePath);
       }
     }
   }
@@ -530,20 +574,22 @@ class Facts {
       || ts.isImportEqualsDeclaration(declaration) || ts.isNamespaceImport(declaration));
     if (!binding) return;
     if (ts.isImportEqualsDeclaration(binding)) {
-      if (access || binding.isTypeOnly) return;
+      if (binding.isTypeOnly) return;
       const literal = moduleSpecifier(binding, this.checker);
-      return literal && this.resolvedImport(literal)?.commonJsDirectExport;
+      const file = literal && this.resolvedImport(literal);
+      return access ? file?.commonJsNamedExports?.get(access.name) : file?.commonJsDirectExport;
     }
     if (ts.isNamespaceImport(binding)) {
       if (!access || binding.parent.isTypeOnly) return;
       const file = this.resolvedImport(binding.parent.parent.moduleSpecifier);
       return access.name === "default" ? file?.commonJsDirectExport : file?.commonJsNamedExports?.get(access.name);
     }
-    if (access) return;
     const named = ts.isImportSpecifier(binding);
     const clause = named ? binding.parent.parent : binding;
-    const file = this.resolvedImport(clause.parent.moduleSpecifier);
     const name = named ? (binding.propertyName ?? binding.name).text : "default";
+    if (access && (name !== "default" || clause.isTypeOnly || binding.isTypeOnly)) return;
+    const file = this.resolvedImport(clause.parent.moduleSpecifier);
+    if (access) return file?.commonJsNamedExports?.get(access.name);
     return name === "default" ? file?.commonJsDirectExport : file?.commonJsNamedExports?.get(name);
   }
 
@@ -688,7 +734,9 @@ class Facts {
         for (const item of this.fieldChoices(value.type, written)) {
           const target = this.declaredTarget(item.annotation)
             ?? this.target(item.type.aliasSymbol) ?? this.target(item.type.getSymbol());
-          if (!owners.has(target) && !excluded.has(target)) this.add("aggregation", id, target, row.line, row.name, "0..*");
+          if (!owners.has(target) && !excluded.has(target)) {
+            this.add("aggregation", id, target, row.line, row.name, "0..*", row.path);
+          }
         }
         continue;
       }
@@ -699,9 +747,9 @@ class Facts {
     }
     if (allSingle && singles.size === 1 && !owners.size) {
       this.add("association", id, [...singles][0], row.line, row.name,
-        optional || present.length !== choices.length ? "0..1" : "1");
+        optional || present.length !== choices.length ? "0..1" : "1", row.path);
     }
-    this.typeDependencies(id, row.line, variants.map(item => item.type), excluded);
+    this.typeDependencies(id, row.line, variants.map(item => item.type), excluded, row.path);
   }
 
   heritage(file, id, node) {
@@ -743,24 +791,21 @@ class Facts {
       const type = this.checker.getTypeFromTypeNode(node.type);
       for (const property of type.getProperties()) {
         const declaration = property.valueDeclaration ?? property.declarations?.[0];
-        const local = declaration?.getSourceFile() === file.source;
-        const location = local ? declaration : node;
         const fieldType = this.checker.getTypeOfSymbolAtLocation(property, node);
         if (declaration && (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration))) {
           for (const signature of this.checker.getNonNullableType(fieldType).getCallSignatures()) {
-            const method = signature.declaration ?? declaration;
             const row = this.member(file, declaration, {
-              kind: "method", name: property.name, location: method.getSourceFile() === file.source ? method : node,
+              kind: "method", name: property.name, location: signature.declaration ?? declaration, fallback: node,
               ...this.signatureMembers(signature, node),
             });
             rows.push(row);
-            this.typeDependencies(id, row.line, this.signatureTypes(signature));
+            this.typeDependencies(id, row.line, this.signatureTypes(signature), undefined, row.path);
           }
         } else {
           const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
           const annotation = declaration && this.matchingAnnotation(fieldType, ts.getEffectiveTypeAnnotationNode(declaration), optional);
           const row = this.member(file, declaration ?? node, {
-            kind: "field", name: property.name, location,
+            kind: "field", name: property.name, fallback: node,
             type: annotation?.getText() ?? this.typeText(fieldType, node),
           });
           rows.push(row);
@@ -824,7 +869,7 @@ class Facts {
       rows.push(row);
       this.fieldLinks(file, id, row, type ?? variants, { optional, annotation: written, assignments });
     }
-    rows.sort((left, right) => left.line - right.line);
+    this.sortMembers(rows);
     this.heritage(file, id, node);
     this.dependencies(file, id, node);
   }

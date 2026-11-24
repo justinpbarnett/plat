@@ -70,6 +70,12 @@ function commonJsExports(facts, file) {
   function propertyMap(receiver) {
     if (isModuleExports(receiver)) return moduleValue.properties ??= new Map();
     if (isWrapperBinding(receiver, "exports")) return exportsValue.properties ??= new Map();
+    const binding = unwrap(receiver);
+    if (!ts.isIdentifier(binding)) return;
+    const declaration = valueSymbol(checker, binding)?.valueDeclaration;
+    if (declaration?.getSourceFile() === source && ts.isVariableDeclaration(declaration)) {
+      return valueOf(binding).properties;
+    }
   }
 
   function exportSymbol(node) {

@@ -41,7 +41,10 @@ def cached_install(cache: Path, dependencies: dict[str, str]) -> Path | None:
 def parser_dir(npm: str) -> Path:
     dependencies = json.loads(MANIFEST.read_text(encoding="utf-8"))["dependencies"]
     base = toolchain.cache_dir().resolve()
-    cache = base / f"typescript-{dependencies['typescript']}-vue-{dependencies['@vue/compiler-sfc']}"
+    cache = base / (
+        f"typescript-{dependencies['typescript']}-vue-{dependencies['@vue/compiler-sfc']}"
+        f"-babel-{dependencies['@babel/parser']}"
+    )
     existing = cached_install(cache, dependencies)
     if existing:
         return existing

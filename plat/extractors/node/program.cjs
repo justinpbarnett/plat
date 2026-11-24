@@ -56,18 +56,36 @@ function isJavaScript(kind) {
   return kind === ts.ScriptKind.JS || kind === ts.ScriptKind.JSX;
 }
 
-function scriptSourceType(source, nodeFormat) {
+function packageTypes() {
+  const types = new Map();
+  function packageType(directory) {
+    if (!types.has(directory)) {
+      const parent = path.dirname(directory);
+      const manifest = path.join(directory, "package.json");
+      const text = ts.sys.readFile(manifest);
+      let type;
+      if (text !== undefined) type = ts.parseConfigFileTextToJson(manifest, text).config?.type;
+      else if (parent !== directory && path.basename(directory) !== "node_modules") type = packageType(parent);
+      types.set(directory, type);
+    }
+    return types.get(directory);
+  }
+  return packageType;
+}
+
+function scriptSourceType(source, nodeFormat, packageType) {
   switch (path.extname(source.fileName).toLowerCase()) {
     case ".cjs": return "commonjs";
-    case ".cts": return "script";
+    case ".cts": return ts.isExternalModule(source) ? "module" : "script";
     case ".mjs":
     case ".mts": return "module";
   }
   if (nodeFormat === ts.ModuleKind.ESNext || ts.isExternalModule(source)) return "module";
-  return isJavaScript(source.scriptKind) && nodeFormat === ts.ModuleKind.CommonJS ? "commonjs" : "script";
+  if (isJavaScript(source.scriptKind)) return packageType === "commonjs" ? "commonjs" : "unambiguous";
+  return "script";
 }
 
-function parsed(fileName, text, scriptKind, firstLine, nodeFormat, setup = false) {
+function parsed(fileName, text, scriptKind, firstLine, nodeFormat, setup = false, packageType) {
   const source = ts.createSourceFile(fileName, text, options.target, true, scriptKind);
   const diagnostic = source.parseDiagnostics[0];
   if (diagnostic) {
@@ -81,7 +99,7 @@ function parsed(fileName, text, scriptKind, firstLine, nodeFormat, setup = false
       throw new Error(`line ${line}: TypeScript syntax is only allowed in TypeScript files`);
     }
   }
-  const invalid = invalidScriptGrammar(source, scriptSourceType(source, nodeFormat), setup);
+  const invalid = invalidScriptGrammar(source, scriptSourceType(source, nodeFormat, packageType), setup);
   if (invalid) {
     const line = source.getLineAndCharacterOfPosition(invalid.position).line + firstLine;
     throw new Error(`line ${line}: ${invalid.message}`);
@@ -260,19 +278,22 @@ function vueSource(fileName, text, occupied) {
 
   const blocks = [descriptor.script, descriptor.scriptSetup].filter(Boolean);
   blocks.sort((left, right) => left.loc.start.offset - right.loc.start.offset);
-  const languages = blocks.map(block => (block.lang ?? "js").toLowerCase());
-  const typed = languages.some(lang => ["ts", "tsx", "mts", "cts"].includes(lang));
-  const jsx = languages.some(lang => lang === "jsx" || lang === "tsx");
+  const [language, secondLanguage] = blocks.map(block => (block.lang ?? "js").toLowerCase());
+  if (blocks.length === 2 && language !== secondLanguage) {
+    throw new Error(`line ${blocks[1].loc.start.line}: <script> and <script setup> must use the same language`);
+  }
+  const typed = ["ts", "tsx", "mts", "cts"].includes(language);
+  const jsx = language === "jsx" || language === "tsx";
   const extension = typed ? (jsx ? "tsx" : "ts") : (jsx ? "jsx" : "js");
   let virtualName = `${fileName}.__plat.${extension}`;
   while (occupied.has(canonical(virtualName)) || ts.sys.fileExists(virtualName)) {
     virtualName = `${virtualName}.${extension}`;
   }
-  const parsedBlocks = blocks.map((block, index) => {
+  const parsedBlocks = blocks.map(block => {
     const setup = block === descriptor.scriptSetup;
     const { line } = block.loc.start;
-    const kind = scriptKinds.get(languages[index]);
-    if (kind === undefined) throw new Error(`line ${line}: unsupported script language ${languages[index]}`);
+    const kind = scriptKinds.get(language);
+    if (kind === undefined) throw new Error(`line ${line}: unsupported script language ${language}`);
     const source = block.src ? undefined : parsed(virtualName, block.content, kind, line, ts.ModuleKind.ESNext, setup);
     return { block, setup, source };
   });
@@ -369,6 +390,7 @@ function loadFiles(root, files) {
   const warnings = [];
   const occupied = new Set(files.map(file => canonical(path.resolve(root, file.path))));
   const packageInfo = ts.createModuleResolutionCache(root, canonical, nodeFormatOptions).getPackageJsonInfoCache();
+  const packageType = packageTypes();
   for (const file of files) {
     const fileName = path.resolve(root, file.path);
     try {
@@ -382,7 +404,8 @@ function loadFiles(root, files) {
         const extension = path.extname(fileName).slice(1).toLowerCase();
         const kind = scriptKinds.get(extension);
         const nodeFormat = ts.getImpliedNodeFormatForFile(fileName, packageInfo, ts.sys, nodeFormatOptions);
-        metadata.source = parsed(fileName, text, kind, 1, nodeFormat);
+        const type = isJavaScript(kind) && packageType(path.dirname(fileName));
+        metadata.source = parsed(fileName, text, kind, 1, nodeFormat, false, type);
         scopeRequireCalls(metadata.source, kind);
         metadata.line = position => metadata.source.getLineAndCharacterOfPosition(position).line + 1;
       }
@@ -391,6 +414,17 @@ function loadFiles(root, files) {
       skipped.add(canonical(fileName));
       warnings.push(`warning: ${file.path}: ${error.message.replace(/\s*\r?\n\s*/g, " ")}`);
     }
+  }
+  const declaringFiles = new Map([...sources.values()].map(file => [file.source, file]));
+  for (const file of sources.values()) {
+    file.location = node => {
+      const declaring = declaringFiles.get(node?.getSourceFile());
+      if (!declaring) return;
+      return {
+        line: declaring.line(node.getStart(declaring.source)),
+        ...(declaring !== file && { path: declaring.path }),
+      };
+    };
   }
   return { sources, vueModules, skipped, warnings };
 }
@@ -470,6 +504,16 @@ function createProgram(root, files) {
   const resolutionCaches = new Map();
 
   function resolve(literal, source) {
+    const name = literal.text;
+    const extension = path.extname(name).toLowerCase();
+    if (isJavaScript(scriptKinds.get(extension.slice(1))) && (/^\.{1,2}\//.test(name) || path.isAbsolute(name))) {
+      const key = canonical(path.resolve(path.dirname(source.fileName), name));
+      if (skipped.has(key)) return { resolvedModule: undefined };
+      const exact = sources.get(key);
+      if (exact) return { resolvedModule: {
+        resolvedFileName: exact.source.fileName, extension, isExternalLibraryImport: false, resolvedUsingTsExtension: false,
+      } };
+    }
     let result;
     for (const settings of settingsFor(source.fileName)) {
       if (!resolutionCaches.has(settings)) {

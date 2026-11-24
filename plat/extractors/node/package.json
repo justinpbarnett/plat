@@ -2,6 +2,7 @@
   "name": "plat-web-extractor",
   "private": true,
   "dependencies": {
+    "@babel/parser": "7.28.5",
     "typescript": "6.0.3",
     "@vue/compiler-sfc": "3.5.46"
   }
