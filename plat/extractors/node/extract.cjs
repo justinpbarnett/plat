@@ -46,6 +46,17 @@ function assignedField(checker, node) {
   return ts.isPropertyAccessExpression(left) ? left.name.text : staticPropertyName(checker, left.argumentExpression);
 }
 
+function* constructions(value) {
+  const expression = unwrap(value);
+  if (!expression) return;
+  if (ts.isNewExpression(expression)) {
+    yield expression;
+  } else if (ts.isConditionalExpression(expression)) {
+    yield* constructions(expression.whenTrue);
+    yield* constructions(expression.whenFalse);
+  }
+}
+
 class Facts {
   constructor({ program, importedFile, files }) {
     this.program = program;
@@ -162,7 +173,8 @@ class Facts {
     const component = this.vueSymbols.get(symbol) ?? this.vueSymbols.get(target);
     if (component) return component;
     for (const declaration of target.declarations ?? []) {
-      const id = this.declarations.get(declaration) ?? (includeComposables && this.composables.get(declaration));
+      const classifier = ts.isEnumMember(declaration) ? declaration.parent : declaration;
+      const id = this.declarations.get(classifier) ?? (includeComposables && this.composables.get(declaration));
       if (id) return id;
     }
   }
@@ -383,9 +395,11 @@ class Facts {
     return targets;
   }
 
-  typeDependencies(id, line, types) {
+  typeDependencies(id, line, types, excluded) {
     for (const type of types) {
-      for (const target of this.typeTargets(type)) this.add("dependency", id, target, line);
+      for (const target of this.typeTargets(type)) {
+        if (!excluded?.has(target)) this.add("dependency", id, target, line);
+      }
     }
   }
 
@@ -420,10 +434,15 @@ class Facts {
   }
 
   referenceTarget(node, includeComposables = false, typeAt) {
+    const namespaceDefault = this.commonJsNamespaceDefault(node);
+    if (namespaceDefault) return this.constructorTarget(namespaceDefault.commonJsDirectExport, includeComposables);
     const symbol = typeAt ? this.checker.getSymbolAtLocation(node) : this.referencedSymbol(node);
-    return this.target(symbol, includeComposables)
-      ?? (typeAt && this.target(this.checker.getTypeAtLocation(typeAt).getSymbol(), includeComposables))
-      ?? this.target(this.bindingExportSymbol(node), includeComposables);
+    const checked = this.target(symbol, includeComposables);
+    const synthetic = (checked || typeAt) && this.syntheticRequireDefault(node, includeComposables);
+    if (checked && checked !== synthetic) return checked;
+    const typed = typeAt && this.target(this.checker.getTypeAtLocation(typeAt).getSymbol(), includeComposables);
+    if (typed && typed !== synthetic) return typed;
+    return this.target(this.bindingExportSymbol(node), includeComposables);
   }
 
   dependencies(file, id, node) {
@@ -437,7 +456,8 @@ class Facts {
       }
       if (ts.isTypeNode(child) || ts.isExpressionNode(child) || ts.isParameter(child)
           || ts.isPropertyDeclaration(child) || ts.isVariableDeclaration(child) || ts.isBindingElement(child)) {
-        this.typeDependencies(id, line, [this.checker.getTypeAtLocation(child)]);
+        const synthetic = this.inferredSyntheticDefault(child);
+        this.typeDependencies(id, line, [this.checker.getTypeAtLocation(child)], synthetic && new Set([synthetic]));
       }
     });
   }
@@ -490,12 +510,36 @@ class Facts {
     return this.importFiles.get(literal);
   }
 
+  commonJsNamespaceDefault(expression) {
+    const access = propertyAccess(this.checker, expression);
+    if (access?.name !== "default") return;
+    const receiver = unwrap(access.receiver);
+    if (!ts.isIdentifier(receiver)) return;
+    const binding = valueSymbol(this.checker, receiver)?.declarations?.find(ts.isNamespaceImport);
+    if (!binding || binding.parent.isTypeOnly) return;
+    const file = this.resolvedImport(binding.parent.parent.moduleSpecifier);
+    if (file?.commonJsReassigned || file?.commonJsNamedExports?.size) return file;
+  }
+
   importedBindingSymbol(expression) {
-    const node = unwrap(expression);
+    const access = propertyAccess(this.checker, expression);
+    const node = unwrap(access?.receiver ?? expression);
     if (!node || !ts.isIdentifier(node)) return;
     const binding = valueSymbol(this.checker, node)?.declarations?.find(declaration =>
-      ts.isImportClause(declaration) || ts.isImportSpecifier(declaration));
+      ts.isImportClause(declaration) || ts.isImportSpecifier(declaration)
+      || ts.isImportEqualsDeclaration(declaration) || ts.isNamespaceImport(declaration));
     if (!binding) return;
+    if (ts.isImportEqualsDeclaration(binding)) {
+      if (access || binding.isTypeOnly) return;
+      const literal = moduleSpecifier(binding, this.checker);
+      return literal && this.resolvedImport(literal)?.commonJsDirectExport;
+    }
+    if (ts.isNamespaceImport(binding)) {
+      if (!access || binding.parent.isTypeOnly) return;
+      const file = this.resolvedImport(binding.parent.parent.moduleSpecifier);
+      return access.name === "default" ? file?.commonJsDirectExport : file?.commonJsNamedExports?.get(access.name);
+    }
+    if (access) return;
     const named = ts.isImportSpecifier(binding);
     const clause = named ? binding.parent.parent : binding;
     const file = this.resolvedImport(clause.parent.moduleSpecifier);
@@ -525,36 +569,104 @@ class Facts {
     return this.requiredModule(binding && ts.isVariableDeclaration(binding) ? binding.initializer : value);
   }
 
-  requiredBindingSymbol(expression) {
+  requiredLookup(expression) {
     const node = unwrap(expression);
     if (!node) return;
     const binding = ts.isBindingElement(node) ? node : this.localBinding(node);
-    let access;
     if (binding && ts.isBindingElement(binding)) {
       if (binding.dotDotDotToken || !ts.isObjectBindingPattern(binding.parent)
           || !ts.isVariableDeclaration(binding.parent.parent) || !binding.parent.parent.initializer) return;
-      access = {
-        name: this.propertyName(binding.propertyName ?? binding.name), receiver: binding.parent.parent.initializer,
-      };
-    } else {
-      const value = binding && ts.isVariableDeclaration(binding) ? binding.initializer : node;
-      const imported = this.requiredModule(value);
-      if (imported) return imported.commonJsDirectExport;
-      access = propertyAccess(this.checker, value);
+      const name = this.propertyName(binding.propertyName ?? binding.name);
+      if (name !== undefined) return { name, receiver: binding.parent.parent.initializer };
+      return;
     }
-    if (access?.name === undefined) return;
-    const imported = this.requiredNamespace(access.receiver);
-    if (imported) return namedExport(this, imported, access.name);
+    const value = binding && ts.isVariableDeclaration(binding) ? unwrap(binding.initializer) : node;
+    if (!value) return;
+    return propertyAccess(this.checker, value) ?? (ts.isCallExpression(value) ? { receiver: value } : undefined);
   }
 
-  fieldLinks(file, id, row, type, { optional = false, creations = [], annotation } = {}) {
+  requiredBindingSymbol(expression) {
+    const lookup = this.requiredLookup(expression);
+    if (!lookup) return;
+    const { name, receiver } = lookup;
+    if (name === undefined) return this.requiredModule(receiver)?.commonJsDirectExport;
+    const imported = this.requiredNamespace(receiver);
+    if (imported) return namedExport(this, imported, name);
+  }
+
+  constructorTarget(symbol, includeComposables = false) {
+    if (!symbol) return;
+    const resolved = this.target(symbol, includeComposables);
+    if (resolved) return resolved;
+    const [signature] = this.checker.getTypeOfSymbol(this.unalias(symbol)).getConstructSignatures();
+    return this.target(signature?.getReturnType().getSymbol(), includeComposables);
+  }
+
+  syntheticRequireDefault(expression, includeComposables = false) {
+    const value = unwrap(expression);
+    if (!value) return;
+    const parent = value.parent;
+    const lookup = this.requiredLookup(parent && (
+      ts.isPropertyAccessExpression(parent) && parent.name === value
+      || ts.isBindingElement(parent) && parent.propertyName === value
+    ) ? parent : value);
+    if (lookup?.name !== "default") return;
+    const file = this.requiredNamespace(lookup.receiver);
+    const direct = file?.commonJsDirectExport;
+    if (!direct) return;
+    const target = this.constructorTarget(direct, includeComposables);
+    if (!target) return;
+    if (file.commonJsNamedExports?.has("default")) {
+      if (this.constructorTarget(namedExport(this, file, "default"), includeComposables) === target) return;
+    } else {
+      const property = this.checker.getTypeOfSymbol(this.unalias(direct)).getProperty("default");
+      const declaration = property?.valueDeclaration;
+      if (declaration && modifiers(declaration) & ts.ModifierFlags.Static
+          && (ts.isPropertyDeclaration(declaration) && declaration.initializer
+            || ts.isGetAccessorDeclaration(declaration) && declaration.body)
+          && this.constructorTarget(property, includeComposables) === target) return;
+    }
+    return target;
+  }
+
+  inferredSyntheticDefault(node) {
+    let value = unwrap(node);
+    if (!value) return;
+    if (ts.isPropertyDeclaration(value) || ts.isVariableDeclaration(value)) {
+      if (ts.getEffectiveTypeAnnotationNode(value)) return;
+      value = unwrap(value.initializer);
+    } else {
+      const assignment = value.parent && ts.isBinaryExpression(value.parent) && value.parent.left === value
+        ? value.parent : value;
+      if (ts.isBinaryExpression(assignment) && fieldAssignments.has(assignment.operatorToken.kind)) {
+        value = unwrap(assignment.right);
+      }
+    }
+    if (value && ts.isNewExpression(value)) {
+      const namespaceDefault = this.commonJsNamespaceDefault(value.expression);
+      if (namespaceDefault) {
+        const inferred = this.target(this.checker.getTypeAtLocation(value).getSymbol());
+        if (inferred !== this.constructorTarget(namespaceDefault.commonJsDirectExport)) return inferred;
+        return;
+      }
+      value = value.expression;
+    }
+    return this.syntheticRequireDefault(value);
+  }
+
+  fieldLinks(file, id, row, type, { optional = false, initializer, assignments = [], annotation } = {}) {
     const owners = new Set();
-    for (const creation of creations) {
-      const expression = ts.isBinaryExpression(creation) ? unwrap(creation.right) : creation;
-      const target = this.referenceTarget(expression.expression, false, expression);
-      if (target) {
-        owners.add(target);
-        this.add("composition", id, target, this.line(file, creation), row.name);
+    const excluded = new Set();
+    const values = [[initializer], ...assignments.map(assignment => [assignment.right, assignment])];
+    for (const [value, assignment] of values) {
+      for (const creation of constructions(value)) {
+        const synthetic = !annotation && this.inferredSyntheticDefault(creation);
+        if (synthetic) excluded.add(synthetic);
+        const target = this.referenceTarget(creation.expression, false, creation);
+        if (target) {
+          owners.add(target);
+          this.add("composition", id, target, this.line(file, assignment ?? creation), row.name);
+        }
       }
     }
     if (!type) return;
@@ -576,20 +688,20 @@ class Facts {
         for (const item of this.fieldChoices(value.type, written)) {
           const target = this.declaredTarget(item.annotation)
             ?? this.target(item.type.aliasSymbol) ?? this.target(item.type.getSymbol());
-          if (!owners.has(target)) this.add("aggregation", id, target, row.line, row.name, "0..*");
+          if (!owners.has(target) && !excluded.has(target)) this.add("aggregation", id, target, row.line, row.name, "0..*");
         }
         continue;
       }
       const target = this.declaredTarget(declared) ?? this.target(choice.aliasSymbol)
         ?? (!choice.getConstructSignatures().length && this.target(choice.getSymbol()));
-      if (target) singles.add(target);
+      if (target && !excluded.has(target)) singles.add(target);
       else allSingle = false;
     }
     if (allSingle && singles.size === 1 && !owners.size) {
       this.add("association", id, [...singles][0], row.line, row.name,
         optional || present.length !== choices.length ? "0..1" : "1");
     }
-    this.typeDependencies(id, row.line, variants.map(item => item.type));
+    this.typeDependencies(id, row.line, variants.map(item => item.type), excluded);
   }
 
   heritage(file, id, node) {
@@ -616,9 +728,8 @@ class Facts {
         }
         const name = assignedField(this.checker, child);
         if (name === undefined) return;
-        const field = assignments.get(name) ?? { node: child, name, value: child.right, creations: [] };
-        const value = unwrap(child.right);
-        if (ts.isNewExpression(value)) field.creations.push(child);
+        const field = assignments.get(name) ?? [];
+        field.push(child);
         assignments.set(name, field);
       });
     }
@@ -669,13 +780,12 @@ class Facts {
       fields.add(key);
       const row = this.member(file, member, { kind: "field", name });
       rows.push(row);
-      const creations = [...(!staticMember ? assigned.get(name)?.creations ?? [] : [])];
+      const assignments = staticMember ? undefined : assigned.get(name);
       if (!staticMember) assigned.delete(name);
-      const initializer = unwrap(member.initializer);
-      if (initializer && ts.isNewExpression(initializer)) creations.unshift(initializer);
       const typed = ts.isSetAccessorDeclaration(member) ? member.parameters[0] ?? member : member;
       this.fieldLinks(file, id, row, this.checker.getTypeAtLocation(typed), {
-        optional: Boolean(member.questionToken), creations, annotation: ts.getEffectiveTypeAnnotationNode(typed),
+        optional: Boolean(member.questionToken), initializer: member.initializer, assignments,
+        annotation: ts.getEffectiveTypeAnnotationNode(typed),
       });
     };
     for (const member of members) {
@@ -693,13 +803,26 @@ class Facts {
         }
       }
     }
-    for (const { node: assignment, name, value, creations } of assigned.values()) {
-      const type = this.checker.getTypeAtLocation(value);
+    for (const [name, assignments] of assigned) {
+      const [assignment] = assignments;
+      const left = unwrap(assignment.left);
+      const symbol = this.referencedSymbol(left) ?? this.checker.getSymbolAtLocation(
+        ts.isPropertyAccessExpression(left) ? left.name : left);
+      const optional = Boolean(symbol?.flags & ts.SymbolFlags.Optional);
+      const annotation = ts.getEffectiveTypeAnnotationNode(symbol?.valueDeclaration ?? left)
+        ?? ts.getEffectiveTypeAnnotationNode(assignment)
+        ?? (ts.isExpressionStatement(assignment.parent) ? ts.getEffectiveTypeAnnotationNode(assignment.parent) : undefined);
+      const type = symbol ? this.checker.getTypeOfSymbol(symbol)
+        : annotation && this.checker.getTypeFromTypeNode(annotation);
+      const written = type && this.matchingAnnotation(type, annotation, optional);
+      const variants = type ? undefined : assignments.map(({ right }) => ({ type: this.checker.getTypeAtLocation(right) }));
+      const fallbackText = variants && [...new Set(variants.map(item => this.typeText(item.type, assignment)))].join(" | ");
       const row = this.member(file, assignment, {
-        kind: "field", name, semanticType: type, visibility: name.startsWith("#") ? "-" : "+",
+        kind: "field", name, semanticType: type, type: written?.getText() ?? fallbackText,
+        visibility: name.startsWith("#") ? "-" : visibility(assignment),
       });
       rows.push(row);
-      this.fieldLinks(file, id, row, type, { creations });
+      this.fieldLinks(file, id, row, type ?? variants, { optional, annotation: written, assignments });
     }
     rows.sort((left, right) => left.line - right.line);
     this.heritage(file, id, node);
@@ -723,10 +846,8 @@ class Facts {
       if (kind === "method") {
         if (isExported) this.composables.set(declaration, id);
       } else {
-        const initializer = unwrap(node.initializer);
         this.fieldLinks(file, id, row, this.checker.getTypeAtLocation(node), {
-          creations: initializer && ts.isNewExpression(initializer) ? [initializer] : [],
-          annotation: ts.getEffectiveTypeAnnotationNode(node),
+          initializer: node.initializer, annotation: ts.getEffectiveTypeAnnotationNode(node),
         });
       }
       this.dependencies(file, id, node);

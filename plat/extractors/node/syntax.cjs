@@ -1,23 +1,30 @@
 const { ts, vue } = require("./parsers.cjs");
 
-const typescriptGrammarErrors = new Set([
+const sharedGrammarErrors = new Set([
   "AsyncFunctionInSingleStatementContext", "AwaitBindingIdentifier", "AwaitBindingIdentifierInStaticBlock",
   "AwaitExpressionFormalParameter", "AwaitNotInAsyncContext", "AwaitUsingNotInAsyncContext",
+  "BadGetterArity", "BadSetterArity", "BadSetterRestParameter", "ConstructorIsAccessor",
   "DeclarationMissingInitializer", "ForInOfLoopInitializer", "GeneratorInSingleStatementContext",
-  "IllegalBreakContinue", "IllegalReturn", "NewlineAfterThrow", "StrictFunction",
-  "UnexpectedImportExport", "UnexpectedLexicalDeclaration",
+  "IllegalBreakContinue", "IllegalReturn", "MixingCoalesceWithLogical", "NewlineAfterThrow",
+  "StrictFunction", "UnexpectedImportExport", "UnexpectedLexicalDeclaration",
 ]);
+const runtimeClassGrammarError = /Private(?:Field|Name|In)|Super/;
+
+function isTypeScript(source) {
+  return source.scriptKind === ts.ScriptKind.TS || source.scriptKind === ts.ScriptKind.TSX;
+}
 
 function parserGrammarError(source, sourceType) {
-  const typed = source.scriptKind === ts.ScriptKind.TS || source.scriptKind === ts.ScriptKind.TSX;
+  const typed = isTypeScript(source);
   const plugins = [typed ? "decorators-legacy" : "decorators", "decoratorAutoAccessors", "deprecatedImportAssert"];
   if (typed) plugins.push(["typescript", { dts: source.isDeclarationFile }]);
   if (source.scriptKind !== ts.ScriptKind.TS) plugins.push("jsx");
   const isGrammarError = error => {
     if (!(error instanceof SyntaxError) || !Number.isInteger(error.pos)) throw error;
-    if (!typed || typescriptGrammarErrors.has(error.reasonCode)) return true;
-    return (error.reasonCode === "UnexpectedReservedWord" || error.reasonCode === "UnexpectedUsingDeclaration"
-      || error.reasonCode === "UnexpectedToken") && /^await\b/.test(source.text.slice(error.pos));
+    const { reasonCode, pos } = error;
+    if (!typed || sharedGrammarErrors.has(reasonCode) || runtimeClassGrammarError.test(reasonCode)) return true;
+    return (reasonCode === "UnexpectedReservedWord" || reasonCode === "UnexpectedUsingDeclaration"
+      || reasonCode === "UnexpectedToken") && /^await\b/.test(source.text.slice(pos));
   };
   let errors;
   try {
@@ -32,11 +39,7 @@ function parserGrammarError(source, sourceType) {
 
 function setupValueExport(statement) {
   if (ts.isExportAssignment(statement)) return true;
-  if (ts.isExportDeclaration(statement)) {
-    const clause = statement.exportClause;
-    return !statement.isTypeOnly && !(clause && ts.isNamedExports(clause)
-      && clause.elements.length && clause.elements.every(element => element.isTypeOnly));
-  }
+  if (ts.isExportDeclaration(statement)) return !statement.isTypeOnly;
   const flags = modifiers(statement);
   return Boolean(flags & ts.ModifierFlags.Export) && !(flags & ts.ModifierFlags.Ambient)
     && !ts.isInterfaceDeclaration(statement) && !ts.isTypeAliasDeclaration(statement)
@@ -108,11 +111,36 @@ function invalidStatement(node) {
   }
 }
 
+function invalidTypedAccessor(accessor) {
+  const { name, parameters, typeParameters, type } = accessor;
+  if (typeParameters) return { node: name, message: "accessors cannot declare type parameters" };
+  const self = parameters.find(parameter => ts.isIdentifier(parameter.name) && parameter.name.text === "this");
+  if (self) return { node: self, message: "accessors cannot declare a this parameter" };
+  if (ts.isGetAccessorDeclaration(accessor)) {
+    if (parameters.length) return { node: name, message: "getters cannot declare parameters" };
+    return;
+  }
+  if (parameters.length !== 1) return { node: name, message: "setters must declare exactly one parameter" };
+  if (type) return { node: type, message: "setters cannot declare a return type" };
+  const [parameter] = parameters;
+  if (parameter.dotDotDotToken || parameter.questionToken || parameter.initializer) {
+    return { node: parameter, message: "setter parameters cannot be rest, optional, or initialized" };
+  }
+  if (modifiers(parameter) & ts.ModifierFlags.ParameterPropertyModifier) {
+    return { node: parameter, message: "parameter properties are only allowed in constructors" };
+  }
+}
+
 function invalidScriptGrammar(source, sourceType, setup) {
   const diagnostic = parserGrammarError(source, sourceType);
   if (diagnostic) return { position: diagnostic.pos, message: diagnostic.message.replace(/ \(\d+:\d+\)$/, "") };
   const commonJsWrapper = sourceType === "commonjs";
+  const typed = isTypeScript(source);
   function check(node) {
+    if (typed && (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))) {
+      const invalid = invalidTypedAccessor(node);
+      if (invalid) return invalid;
+    }
     if (ts.isStatement(node)) {
       const invalid = invalidStatement(node);
       if (invalid) return invalid;

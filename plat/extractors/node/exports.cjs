@@ -197,6 +197,12 @@ function namedExport(facts, file, name) {
   if (module) return checker.getTypeOfSymbolAtLocation(module, source).getProperty(name);
 }
 
+function typeOnlyExport(declaration) {
+  if (ts.isExportSpecifier(declaration)) return declaration.isTypeOnly || declaration.parent.parent.isTypeOnly;
+  if (ts.isNamespaceExport(declaration)) return declaration.parent.isTypeOnly;
+  return ts.isImportEqualsDeclaration(declaration) && declaration.isTypeOnly;
+}
+
 function exportedDeclarations(facts, file) {
   const { source } = file;
   const { checker } = facts;
@@ -206,7 +212,12 @@ function exportedDeclarations(facts, file) {
     for (const declaration of facts.unalias(symbol).declarations ?? []) result.add(declaration);
   };
   const module = explicitModuleSymbol(checker, source);
-  if (module) checker.getExportsOfModule(module).forEach(add);
+  if (module) {
+    for (const symbol of checker.getExportsOfModule(module)) {
+      const declarations = symbol.declarations;
+      if (!declarations?.length || !declarations.every(typeOnlyExport)) add(symbol);
+    }
+  }
   for (const statement of source.statements) {
     if (ts.isExportAssignment(statement) && statement.isExportEquals) {
       add(valueSymbol(checker, unwrap(statement.expression)));

@@ -84,11 +84,15 @@ function typeOfRuntimeProp(facts, node, seen = new Set()) {
       types: values.flatMap(item => item.types),
     };
   }
-  const known = ts.isIdentifier(node) && runtimeTypes.get(node.text);
-  if (known) return { text: known, types: [{ type: facts.checker.getAnyType() }] };
   if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-    const symbol = valueSymbol(facts.checker, node);
-    const initializer = symbol && assignedValue(facts.unalias(symbol).valueDeclaration);
+    const reference = valueSymbol(facts.checker, node);
+    const symbol = reference && facts.unalias(reference);
+    const declaration = symbol?.valueDeclaration;
+    const known = symbol && runtimeTypes.get(symbol.name);
+    if (known && declaration && facts.program.isSourceFileDefaultLibrary(declaration.getSourceFile())) {
+      return { text: known, types: [{ type: facts.checker.getAnyType() }] };
+    }
+    const initializer = assignedValue(declaration);
     if (initializer) {
       seen.add(node);
       const result = typeOfRuntimeProp(facts, initializer, seen);
@@ -124,16 +128,31 @@ function propsFromRuntime(facts, file, node, origin, add) {
 }
 
 function propsFromType(facts, file, node, add) {
-  for (const property of facts.checker.getTypeFromTypeNode(node).getProperties()) {
-    const declaration = property.valueDeclaration ?? property.declarations?.[0];
-    const location = localLocation(file, declaration, node);
-    const type = facts.checker.getTypeOfSymbolAtLocation(property, node);
-    const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
-    const annotation = declaration && facts.matchingAnnotation(type, ts.getEffectiveTypeAnnotationNode(declaration), optional);
-    add({
-      kind: "field", name: property.name, visibility: "+", line: facts.line(file, location),
-      type: annotation?.getText() ?? facts.typeText(type, node),
-    }, type, { optional, annotation });
+  const { checker } = facts;
+  const props = checker.getTypeFromTypeNode(node);
+  const alternatives = props.isUnion() ? props.types : [props];
+  const properties = new Map();
+  for (const alternative of alternatives) {
+    for (const property of alternative.getProperties()) {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0];
+      const type = checker.getTypeOfSymbolAtLocation(property, node);
+      const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
+      const annotation = declaration && facts.matchingAnnotation(type, ts.getEffectiveTypeAnnotationNode(declaration), optional);
+      const choices = properties.get(property.name) ?? [];
+      choices.push({ type, annotation, optional, declaration });
+      properties.set(property.name, choices);
+    }
+  }
+  for (const [name, choices] of properties) {
+    const optional = choices.length !== alternatives.length || choices.some(choice => choice.optional);
+    const local = choices.find(choice => choice.declaration?.getSourceFile() === file.source);
+    const texts = new Set(choices.map(({ type, annotation }) => annotation?.getText() ?? facts.typeText(type, node)));
+    const common = texts.size > 1 && props.getProperty(name);
+    const text = texts.size === 1 ? texts.values().next().value
+      : common ? facts.typeText(checker.getTypeOfSymbolAtLocation(common, node), node)
+      : [...new Set(choices.map(({ type }) => checker.typeToString(type, node, ts.TypeFormatFlags.InElementType)))].join(" | ");
+    add({ kind: "field", name, visibility: "+", line: facts.line(file, local?.declaration ?? node), type: text },
+      choices, { optional });
   }
 }
 
@@ -143,6 +162,12 @@ function event(facts, file, name, location, params = [], type = "void") {
 
 function emitsFromType(facts, file, node, add) {
   const type = facts.checker.getTypeFromTypeNode(node);
+  for (const variant of type.isUnion() ? type.types : [type]) {
+    emitsFromVariant(facts, file, variant, node, add);
+  }
+}
+
+function emitsFromVariant(facts, file, type, node, add) {
   for (const signature of type.getCallSignatures()) {
     const [eventName] = signature.getParameters();
     if (!eventName) continue;
@@ -221,7 +246,7 @@ function setupBindings(facts, file, statement, add) {
         } else {
           record(binding, { kind: "field" }, facts.checker.getTypeAtLocation(binding), {
             annotation: ts.getEffectiveTypeAnnotationNode(binding),
-            creations: binding === declaration && initializer && ts.isNewExpression(initializer) ? [initializer] : [],
+            initializer: binding === declaration ? initializer : undefined,
           });
         }
       }
@@ -270,7 +295,13 @@ function vueMembers(facts, file) {
 
   function options(origin, initializer) {
     const value = runtimeValue(facts, initializer);
-    const argument = value && ts.isCallExpression(value) ? value.arguments[0] : value;
+    let argument = value;
+    if (value && ts.isCallExpression(value)) {
+      const [first, second] = value.arguments;
+      const setup = second && runtimeValue(facts, first);
+      argument = setup && (ts.isFunctionLike(setup)
+        || callSignatures(facts, facts.checker.getTypeAtLocation(first)).length) ? second : first;
+    }
     const entries = runtimeEntries(facts, argument);
     const props = entries.get("props")?.value;
     const emits = entries.get("emits")?.value;

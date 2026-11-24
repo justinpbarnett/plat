@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { ts, vue } = require("./parsers.cjs");
-const { visit, invalidScriptGrammar } = require("./syntax.cjs");
+const { bindings, visit, invalidScriptGrammar } = require("./syntax.cjs");
 
 const options = {
   allowJs: true,
@@ -129,21 +129,125 @@ function hasDefaultExport(statement) {
     : clause.name.text === "default";
 }
 
-function setupScript(source, block, imports, separators) {
+function localExportSpecifiers(statement) {
+  if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier
+      && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+    return statement.exportClause.elements;
+  }
+  return [];
+}
+
+function setupDeclarationNames(statement) {
+  if (ts.isVariableStatement(statement)) {
+    return statement.declarationList.declarations.flatMap(declaration =>
+      Array.from(bindings(declaration), binding => binding.name));
+  }
+  if (!ts.isImportEqualsDeclaration(statement) && statement.name && ts.isIdentifier(statement.name)) {
+    return [statement.name];
+  }
+  return [];
+}
+
+function setupTypeExports(source, blocks) {
+  const declarations = new Map();
+  const directExports = new Map();
+  const requested = new Set();
+  for (const statement of source.statements) {
+    for (const specifier of localExportSpecifiers(statement)) requested.add((specifier.propertyName ?? specifier.name).text);
+    const flags = ts.getCombinedModifierFlags(statement);
+    for (const name of setupDeclarationNames(statement)) {
+      if (!declarations.has(name.text)) declarations.set(name.text, []);
+      if (flags & ts.ModifierFlags.Export) {
+        directExports.set(name.text, flags & ts.ModifierFlags.Default ? "default" : name.text);
+        requested.add(name.text);
+      } else {
+        declarations.get(name.text).push(statement.getStart(source));
+      }
+    }
+  }
+  const names = [...requested].filter(name => declarations.has(name));
+  if (!names.length) return;
+
+  const identifiers = new Set();
+  for (const block of blocks) {
+    if (block.source) visit(block.source, node => {
+      if (ts.isIdentifier(node)) identifiers.add(node.text);
+    });
+  }
+  let next = 0;
+  function fresh(stem) {
+    let name = `${stem}${next++}`;
+    while (identifiers.has(name)) name = `${stem}${next++}`;
+    return name;
+  }
+  const scope = fresh("__platSetup");
+  const aliases = new Map();
+  const exportPositions = new Set();
+  const statements = [];
+  for (const name of names) {
+    const alias = fresh("__platType");
+    aliases.set(name, alias);
+    for (const position of declarations.get(name)) exportPositions.add(position);
+    const exported = directExports.get(name);
+    const member = exported === "default" ? "default" : name;
+    statements.push(`import ${alias} = ${scope}.${member};`);
+    if (exported !== undefined) statements.push(`export type { ${alias} as ${exported} };`);
+  }
+  return { scope, aliases, exportPositions, bridge: statements.join("\n") + "\n" };
+}
+
+function liftedSetupText(source, statement, start, aliases) {
+  const parts = [];
+  let end = start;
+  for (const specifier of localExportSpecifiers(statement)) {
+    const local = specifier.propertyName ?? specifier.name;
+    const alias = aliases?.get(local.text);
+    if (!alias) continue;
+    parts.push(source.text.slice(end, local.getStart(source)), alias);
+    if (!specifier.propertyName) parts.push(" as ", local.getText(source));
+    end = local.end;
+  }
+  parts.push(source.text.slice(end, statement.end));
+  return parts.join("");
+}
+
+function setupScript(source, block, lifted, separators, types) {
   const parts = [];
   let end = 0;
   for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) && !ts.isImportEqualsDeclaration(statement)) continue;
+    if (!ts.isImportDeclaration(statement) && !ts.isImportEqualsDeclaration(statement)
+        && !ts.isExportDeclaration(statement)) continue;
     const start = statement.getStart(source);
     const location = source.getLineAndCharacterOfPosition(start);
-    const text = source.text.slice(start, statement.end);
-    imports.push({ text, line: block.loc.start.line + location.line, offset: block.loc.start.offset + start });
-    parts.push(source.text.slice(end, start), ";", text.slice(1).replace(/[^\r\n\u2028\u2029]/g, " "));
+    const text = liftedSetupText(source, statement, start, types?.aliases);
+    lifted.push({ text, line: block.loc.start.line + location.line, offset: block.loc.start.offset + start });
+    const masked = source.text.slice(start + 1, statement.end).replace(/[^\r\n\u2028\u2029]/g, " ");
+    parts.push(source.text.slice(end, start), ";", masked);
     separators.add(start);
     end = statement.end;
   }
   parts.push(source.text.slice(end));
   return parts.join("");
+}
+
+function finalizeSetupScope(container, source, start, types) {
+  const asyncWrapper = types ? container.body.statements[0] : container;
+  const statements = asyncWrapper.expression.expression.body.statements;
+  if (types) {
+    container.body.statements = statements;
+    for (const statement of statements) {
+      statement.parent = container.body;
+      const position = statement.getStart(source);
+      if (types.exportPositions.has(position - start)) {
+        const keyword = ts.factory.createModifier(ts.SyntaxKind.ExportKeyword);
+        ts.setTextRange(keyword, { pos: position, end: position });
+        keyword.parent = statement;
+        statement.modifiers = ts.factory.createNodeArray([keyword, ...(statement.modifiers ?? [])]);
+        statement.modifierFlagsCache = ts.ModifierFlags.None;
+      }
+    }
+  }
+  return statements;
 }
 
 function vueSource(fileName, text, occupied) {
@@ -164,11 +268,20 @@ function vueSource(fileName, text, occupied) {
   while (occupied.has(canonical(virtualName)) || ts.sys.fileExists(virtualName)) {
     virtualName = `${virtualName}.${extension}`;
   }
+  const parsedBlocks = blocks.map((block, index) => {
+    const setup = block === descriptor.scriptSetup;
+    const { line } = block.loc.start;
+    const kind = scriptKinds.get(languages[index]);
+    if (kind === undefined) throw new Error(`line ${line}: unsupported script language ${languages[index]}`);
+    const source = block.src ? undefined : parsed(virtualName, block.content, kind, line, ts.ModuleKind.ESNext, setup);
+    return { block, setup, source };
+  });
+  const defaultExport = parsedBlocks.some(({ block, source }) => block.src || source.statements.some(hasDefaultExport));
   let script = "";
-  let defaultExport = false;
   let setupStart;
   let setupBody;
-  const imports = [];
+  let types;
+  const lifted = [];
   const separators = new Set();
   const chunks = [];
   function append(text, line, offset, setup) {
@@ -176,33 +289,28 @@ function vueSource(fileName, text, occupied) {
     script += text;
     chunks.push({ start, end: script.length, line, offset, setup });
   }
-  for (let index = 0; index < blocks.length; index++) {
-    const block = blocks[index];
-    const setup = block === descriptor.scriptSetup;
+  for (const { block, setup, source } of parsedBlocks) {
     const { line, offset } = block.loc.start;
-    const kind = scriptKinds.get(languages[index]);
-    if (kind === undefined) throw new Error(`line ${line}: unsupported script language ${languages[index]}`);
     if (block.src) {
-      defaultExport = true;
       append(`export { default } from ${JSON.stringify(block.src)};`, line, offset, false);
       script += "\n";
-      continue;
-    }
-    const blockSource = parsed(virtualName, block.content, kind, line, ts.ModuleKind.ESNext, setup);
-    if (setup) {
+    } else if (setup) {
+      types = setupTypeExports(source, parsedBlocks);
       script += ";";
       setupStart = script.length;
+      if (types) script += `namespace ${types.scope} {\n`;
       script += "(async function () {\n";
       setupBody = script.length;
-      append(setupScript(blockSource, block, imports, separators), line, offset, true);
+      append(setupScript(source, block, lifted, separators, types), line, offset, true);
       script += "\n});\n";
+      if (types) script += "}\n";
     } else {
-      defaultExport = blockSource.statements.some(hasDefaultExport);
       append(block.content, line, offset, false);
       script += "\n;\n";
     }
   }
-  for (const { text, line, offset } of imports) {
+  if (types) script += types.bridge;
+  for (const { text, line, offset } of lifted) {
     append(text, line, offset, true);
     script += "\n;\n";
   }
@@ -240,7 +348,7 @@ function vueSource(fileName, text, occupied) {
   }
   for (const statement of source.statements) {
     if (statement.getStart(source) === setupStart) {
-      for (const child of statement.expression.expression.body.statements) {
+      for (const child of finalizeSetupScope(statement, source, setupBody, types)) {
         if (!separators.has(child.getStart(source) - setupBody)) record(child);
       }
     } else record(statement);
