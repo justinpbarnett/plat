@@ -1,16 +1,21 @@
 const path = require("node:path");
 const { ts } = require("./parsers.cjs");
 const { createProgram } = require("./program.cjs");
-const { position, nameOf, modifiers, docOf, unwrap, staticPropertyName, bindings, visit,
-  moduleSpecifier, importBindings } = require("./syntax.cjs");
-const { vueMembers } = require("./vue.cjs");
-const { commonJsExports, exportedDeclarations } = require("./exports.cjs");
+const { position, nameOf, modifiers, docOf, unwrap, valueSymbol, staticPropertyName, bindings, visit,
+  moduleSpecifier } = require("./syntax.cjs");
+const { vueMembers, vueImportDependencies } = require("./vue.cjs");
+const { propertyAccess, commonJsExports, namedExport, exportedDeclarations } = require("./exports.cjs");
 
 const collectionValues = new Map([
   ["Array", 0], ["ReadonlyArray", 0], ["Set", 0], ["ReadonlySet", 0],
   ["Map", 1], ["ReadonlyMap", 1], ["Record", 1],
 ]);
 const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+const structuralDepthLimit = 256;
+const fieldAssignments = new Set([
+  ts.SyntaxKind.EqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+]);
 
 function qualify(parent, name) {
   return parent && parent !== "." ? `${parent}.${modelText(name)}` : modelText(name);
@@ -34,7 +39,7 @@ function visibility(node) {
 }
 
 function assignedField(checker, node) {
-  if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
+  if (!ts.isBinaryExpression(node) || !fieldAssignments.has(node.operatorToken.kind)) return;
   const left = unwrap(node.left);
   if (!(ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left))
       || unwrap(left.expression).kind !== ts.SyntaxKind.ThisKeyword) return;
@@ -42,9 +47,10 @@ function assignedField(checker, node) {
 }
 
 class Facts {
-  constructor(program, importedFile) {
+  constructor({ program, importedFile, files }) {
     this.program = program;
     this.importedFile = importedFile;
+    this.sources = new Set(files.map(file => file.source));
     this.checker = program.getTypeChecker();
     this.elements = Object.create(null);
     this.usedIds = new Set();
@@ -53,6 +59,9 @@ class Facts {
     this.composables = new Map();
     this.vueSymbols = new Map();
     this.relationships = new Map();
+    this.requireModules = new WeakMap();
+    this.importFiles = new WeakMap();
+    this.typeTargetCache = new WeakMap();
   }
 
   element(id, kind, name, parent, file, line) {
@@ -158,12 +167,15 @@ class Facts {
     }
   }
 
-  add(kind, from, to, line, label, multiplicity) {
+  add(kind, from, to, line, label, multiplicity, sourcePath) {
     if (!from || !to || from === to) return;
     const key = JSON.stringify([from, to, kind, label]);
     const existing = this.relationships.get(key);
     if (existing && existing.line <= line) return;
-    this.relationships.set(key, { kind, from, to, line, ...(label && { label }), ...(multiplicity && { multiplicity }) });
+    this.relationships.set(key, {
+      kind, from, to, line, ...(label && { label }), ...(multiplicity && { multiplicity }),
+      ...(sourcePath && sourcePath !== this.elements[from]?.path && { path: sourcePath }),
+    });
   }
 
   results(warnings) {
@@ -310,20 +322,76 @@ class Facts {
     ];
   }
 
-  typeTargets(type, targets = new Set(), seen = new Set()) {
-    if (!type || seen.has(type)) return targets;
-    seen.add(type);
-    for (const symbol of [type.aliasSymbol, type.getSymbol()]) {
-      const target = this.target(symbol);
-      if (target) targets.add(target);
+  *signatureTypes(signature) {
+    if (signature.thisParameter) yield this.checker.getTypeOfSymbol(signature.thisParameter);
+    for (const parameter of signature.getParameters()) {
+      yield this.checker.getTypeOfSymbol(parameter);
     }
-    for (const item of [...(type.types ?? []), ...this.typeArguments(type)]) this.typeTargets(item, targets, seen);
+    for (const parameter of signature.getTypeParameters() ?? []) {
+      yield this.checker.getBaseConstraintOfType(parameter);
+    }
+    yield signature.getReturnType();
+    yield this.checker.getTypePredicateOfSignature(signature)?.type;
+  }
+
+  *structuralTypes(type) {
+    const symbol = type.getSymbol();
+    if (!(type.flags & ts.TypeFlags.Object)
+        || !(type.objectFlags & (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Mapped))
+        || symbol?.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Enum | ts.SymbolFlags.Module)) return;
+    const inRepo = declaration => declaration && this.sources.has(declaration.getSourceFile());
+    const origins = symbol?.declarations ?? (type.declaration ? [type.declaration] : type.aliasSymbol?.declarations);
+    const local = origins?.some(inRepo);
+    if (origins?.length && !local) return;
+    for (const property of type.getProperties()) {
+      if (local || property.declarations?.some(inRepo)) yield this.checker.getTypeOfSymbol(property);
+    }
+    for (const signature of [...type.getCallSignatures(), ...type.getConstructSignatures()]) {
+      if (local || inRepo(signature.declaration)) yield* this.signatureTypes(signature);
+    }
+    for (const index of this.checker.getIndexInfosOfType(type)) {
+      if (local || inRepo(index.declaration)) yield index.type;
+    }
+  }
+
+  typeTargets(type) {
+    if (!type) return [];
+    const cached = this.typeTargetCache.get(type);
+    if (cached) return cached;
+    const targets = new Set();
+    const seen = new Set([type]);
+    const pending = [{ type, depth: 0 }];
+    const enqueue = (item, depth) => {
+      if (item && !seen.has(item)) {
+        seen.add(item);
+        pending.push({ type: item, depth });
+      }
+    };
+    for (let index = 0; index < pending.length; index++) {
+      const { type: current, depth } = pending[index];
+      const alias = this.target(current.aliasSymbol);
+      const symbol = this.target(current.getSymbol());
+      if (alias) targets.add(alias);
+      if (symbol) targets.add(symbol);
+      for (const item of current.types ?? []) enqueue(item, depth);
+      for (const item of this.typeArguments(current)) enqueue(item, depth);
+      if (depth < structuralDepthLimit && !alias && !symbol) {
+        for (const item of this.structuralTypes(current)) enqueue(item, depth + 1);
+      }
+    }
+    this.typeTargetCache.set(type, targets);
     return targets;
+  }
+
+  typeDependencies(id, line, types) {
+    for (const type of types) {
+      for (const target of this.typeTargets(type)) this.add("dependency", id, target, line);
+    }
   }
 
   referencedSymbol(node) {
     if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isPropertyAccessExpression(node)) {
-      return this.checker.getSymbolAtLocation(node);
+      return valueSymbol(this.checker, node);
     }
     let receiver, key;
     if (ts.isElementAccessExpression(node)) {
@@ -351,23 +419,25 @@ class Facts {
     return nameOf(node);
   }
 
+  referenceTarget(node, includeComposables = false, typeAt) {
+    const symbol = typeAt ? this.checker.getSymbolAtLocation(node) : this.referencedSymbol(node);
+    return this.target(symbol, includeComposables)
+      ?? (typeAt && this.target(this.checker.getTypeAtLocation(typeAt).getSymbol(), includeComposables))
+      ?? this.target(this.bindingExportSymbol(node), includeComposables);
+  }
+
   dependencies(file, id, node) {
     visit(node, child => {
       if (child !== node && this.declarations.has(child) && this.declarations.get(child) !== id) return false;
       const line = this.line(file, child);
-      const symbol = this.referencedSymbol(child);
-      if (symbol) this.add("dependency", id, this.target(symbol, file.language === "vue"), line);
+      this.add("dependency", id, this.referenceTarget(child, file.language === "vue"), line);
       if (ts.isFunctionLike(child)) {
         const signature = this.checker.getSignatureFromDeclaration(child);
-        for (const target of this.typeTargets(signature?.getReturnType())) {
-          this.add("dependency", id, target, line);
-        }
+        this.typeDependencies(id, line, [signature?.getReturnType()]);
       }
       if (ts.isTypeNode(child) || ts.isExpressionNode(child) || ts.isParameter(child)
           || ts.isPropertyDeclaration(child) || ts.isVariableDeclaration(child) || ts.isBindingElement(child)) {
-        for (const target of this.typeTargets(this.checker.getTypeAtLocation(child))) {
-          this.add("dependency", id, target, line);
-        }
+        this.typeDependencies(id, line, [this.checker.getTypeAtLocation(child)]);
       }
     });
   }
@@ -408,15 +478,83 @@ class Facts {
     return [{ type, annotation }];
   }
 
+  localBinding(node) {
+    if (!node || !ts.isIdentifier(node)) return;
+    const symbol = valueSymbol(this.checker, node);
+    const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.find(ts.isBindingElement);
+    if (declaration?.getSourceFile() === node.getSourceFile()) return declaration;
+  }
+
+  resolvedImport(literal) {
+    if (!this.importFiles.has(literal)) this.importFiles.set(literal, this.importedFile(literal));
+    return this.importFiles.get(literal);
+  }
+
+  importedBindingSymbol(expression) {
+    const node = unwrap(expression);
+    if (!node || !ts.isIdentifier(node)) return;
+    const binding = valueSymbol(this.checker, node)?.declarations?.find(declaration =>
+      ts.isImportClause(declaration) || ts.isImportSpecifier(declaration));
+    if (!binding) return;
+    const named = ts.isImportSpecifier(binding);
+    const clause = named ? binding.parent.parent : binding;
+    const file = this.resolvedImport(clause.parent.moduleSpecifier);
+    const name = named ? (binding.propertyName ?? binding.name).text : "default";
+    return name === "default" ? file?.commonJsDirectExport : file?.commonJsNamedExports?.get(name);
+  }
+
+  bindingExportSymbol(expression) {
+    return this.importedBindingSymbol(expression) ?? this.requiredBindingSymbol(expression);
+  }
+
+  requiredModule(expression) {
+    const call = unwrap(expression);
+    if (!call || !ts.isCallExpression(call)) return;
+    if (!this.requireModules.has(call)) {
+      const loader = unwrap(call.expression);
+      if (!ts.isIdentifier(loader) || loader.text !== "require") return;
+      const literal = moduleSpecifier(call, this.checker);
+      this.requireModules.set(call, literal && this.resolvedImport(literal));
+    }
+    return this.requireModules.get(call);
+  }
+
+  requiredNamespace(expression) {
+    const value = unwrap(expression);
+    const binding = this.localBinding(value);
+    return this.requiredModule(binding && ts.isVariableDeclaration(binding) ? binding.initializer : value);
+  }
+
+  requiredBindingSymbol(expression) {
+    const node = unwrap(expression);
+    if (!node) return;
+    const binding = ts.isBindingElement(node) ? node : this.localBinding(node);
+    let access;
+    if (binding && ts.isBindingElement(binding)) {
+      if (binding.dotDotDotToken || !ts.isObjectBindingPattern(binding.parent)
+          || !ts.isVariableDeclaration(binding.parent.parent) || !binding.parent.parent.initializer) return;
+      access = {
+        name: this.propertyName(binding.propertyName ?? binding.name), receiver: binding.parent.parent.initializer,
+      };
+    } else {
+      const value = binding && ts.isVariableDeclaration(binding) ? binding.initializer : node;
+      const imported = this.requiredModule(value);
+      if (imported) return imported.commonJsDirectExport;
+      access = propertyAccess(this.checker, value);
+    }
+    if (access?.name === undefined) return;
+    const imported = this.requiredNamespace(access.receiver);
+    if (imported) return namedExport(this, imported, access.name);
+  }
+
   fieldLinks(file, id, row, type, { optional = false, creations = [], annotation } = {}) {
     const owners = new Set();
-    for (const expression of creations) {
-      const instance = this.checker.getTypeAtLocation(expression);
-      const target = this.target(this.checker.getSymbolAtLocation(expression.expression))
-        ?? this.target(instance.getSymbol());
+    for (const creation of creations) {
+      const expression = ts.isBinaryExpression(creation) ? unwrap(creation.right) : creation;
+      const target = this.referenceTarget(expression.expression, false, expression);
       if (target) {
         owners.add(target);
-        this.add("composition", id, target, this.line(file, expression), row.name);
+        this.add("composition", id, target, this.line(file, creation), row.name);
       }
     }
     if (!type) return;
@@ -451,19 +589,14 @@ class Facts {
       this.add("association", id, [...singles][0], row.line, row.name,
         optional || present.length !== choices.length ? "0..1" : "1");
     }
-    for (const { type: item } of variants) {
-      for (const target of this.typeTargets(item)) {
-        this.add("dependency", id, target, row.line);
-      }
-    }
+    this.typeDependencies(id, row.line, variants.map(item => item.type));
   }
 
   heritage(file, id, node) {
     for (const clause of node.heritageClauses ?? []) {
       const kind = clause.token === ts.SyntaxKind.ImplementsKeyword ? "realization" : "generalization";
       for (const base of clause.types) {
-        const target = this.target(this.checker.getSymbolAtLocation(base.expression))
-          ?? this.target(this.checker.getTypeAtLocation(base).getSymbol());
+        const target = this.referenceTarget(base.expression, false, base);
         this.add(kind, id, target, this.line(file, base));
       }
     }
@@ -485,7 +618,7 @@ class Facts {
         if (name === undefined) return;
         const field = assignments.get(name) ?? { node: child, name, value: child.right, creations: [] };
         const value = unwrap(child.right);
-        if (ts.isNewExpression(value)) field.creations.push(value);
+        if (ts.isNewExpression(value)) field.creations.push(child);
         assignments.set(name, field);
       });
     }
@@ -503,12 +636,14 @@ class Facts {
         const location = local ? declaration : node;
         const fieldType = this.checker.getTypeOfSymbolAtLocation(property, node);
         if (declaration && (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration))) {
-          for (const signature of fieldType.getCallSignatures()) {
+          for (const signature of this.checker.getNonNullableType(fieldType).getCallSignatures()) {
             const method = signature.declaration ?? declaration;
-            rows.push(this.member(file, declaration, {
+            const row = this.member(file, declaration, {
               kind: "method", name: property.name, location: method.getSourceFile() === file.source ? method : node,
               ...this.signatureMembers(signature, node),
-            }));
+            });
+            rows.push(row);
+            this.typeDependencies(id, row.line, this.signatureTypes(signature));
           }
         } else {
           const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
@@ -574,6 +709,10 @@ class Facts {
   moduleMembers(file) {
     const members = [];
     const exported = exportedDeclarations(this, file);
+    const direct = file.commonJsDirectExport?.valueDeclaration;
+    const inline = direct && (ts.isFunctionExpression(direct) || ts.isArrowFunction(direct)) ? direct : undefined;
+    let inlineStatement = inline;
+    while (inlineStatement?.parent && inlineStatement.parent !== file.source) inlineStatement = inlineStatement.parent;
     const id = this.claimId(`${file.module}:utility`);
     const add = (node, declaration, kind, name) => {
       const isExported = exported.has(declaration) || modifiers(declaration) & ts.ModifierFlags.Export;
@@ -593,6 +732,7 @@ class Facts {
       this.dependencies(file, id, node);
     };
     for (const statement of file.source.statements) {
+      if (statement === inlineStatement) add(inline, inline, "method", nameOf(inline.name) ?? "default");
       if (ts.isFunctionDeclaration(statement)) {
         add(statement, statement, "method", nameOf(statement.name) ?? "default");
       } else if (ts.isVariableStatement(statement)) {
@@ -602,7 +742,8 @@ class Facts {
           if (this.declarations.has(declaration)) continue;
           for (const binding of bindings(declaration)) {
             const name = nameOf(binding.name);
-            if (constant && binding === declaration && initializer && ts.isArrowFunction(initializer)) {
+            if (constant && binding === declaration && initializer && (ts.isArrowFunction(initializer)
+                || declaration === direct && ts.isFunctionExpression(initializer))) {
               add(initializer, binding, "method", name);
             } else {
               add(binding, binding, "field", name);
@@ -614,13 +755,7 @@ class Facts {
     if (members.length) {
       const name = this.elements[file.package].name;
       const utility = this.element(id, "utility", name, file.package, file, 1);
-      (utility.members ??= []).push(...members);
-    }
-  }
-
-  moduleDependencies(id, symbol, line, includeComposables) {
-    for (const exported of this.checker.getExportsOfModule(symbol)) {
-      this.add("dependency", id, this.target(exported, includeComposables), line);
+      (utility.members ??= []).push(...members.sort((left, right) => left.line - right.line));
     }
   }
 
@@ -628,20 +763,11 @@ class Facts {
     const importedModule = node => {
       const literal = moduleSpecifier(node, this.checker);
       if (!literal) return;
-      const imported = this.importedFile(literal);
+      const imported = this.resolvedImport(literal);
       if (!imported) return;
       const line = this.line(file, node);
-      this.add("dependency", file.package, imported.package, line);
-      if (file.language === "vue") {
-        if (imported.language === "vue") this.add("dependency", file.module, imported.module, line);
-        for (const name of importBindings(node)) {
-          const symbol = this.checker.getSymbolAtLocation(name);
-          this.add("dependency", file.module, this.target(symbol, true), line);
-          if (symbol && ts.isNamespaceImport(name.parent)) {
-            this.moduleDependencies(file.module, this.unalias(symbol), line, true);
-          }
-        }
-      }
+      this.add("dependency", file.package, imported.package, line, undefined, undefined, file.path);
+      if (file.language === "vue") vueImportDependencies(this, file, node, imported, line);
     };
     if (file.scripts) {
       for (const { statement } of file.scripts) visit(statement, importedModule);
@@ -654,7 +780,7 @@ class Facts {
 function extract({ root, files }) {
   files.sort((left, right) => left.path < right.path ? -1 : Number(left.path > right.path));
   const project = createProgram(root, files);
-  const facts = new Facts(project.program, project.importedFile);
+  const facts = new Facts(project);
   facts.packageFiles(project.files);
   const classifiers = new Map();
   for (const file of project.files) {

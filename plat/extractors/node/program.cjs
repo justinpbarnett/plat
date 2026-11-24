@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { ts, vue } = require("./parsers.cjs");
-const { visit } = require("./syntax.cjs");
+const { visit, invalidScriptGrammar } = require("./syntax.cjs");
 
 const options = {
   allowJs: true,
@@ -17,6 +17,7 @@ const options = {
   preserveSymlinks: true,
   types: [],
 };
+const nodeFormatOptions = { moduleResolution: ts.ModuleResolutionKind.NodeNext };
 
 const scriptKinds = new Map([
   ["ts", ts.ScriptKind.TS], ["tsx", ts.ScriptKind.TSX],
@@ -51,42 +52,45 @@ function typescriptSyntax(node) {
   return ts.forEachChild(node, typescriptSyntax);
 }
 
-function uninitializedConst(node) {
-  if (node.flags & ts.NodeFlags.Ambient) return;
-  if (ts.isVariableDeclarationList(node) && node.flags & ts.NodeFlags.Const) {
-    const loop = ts.isForInStatement(node.parent) || ts.isForOfStatement(node.parent);
-    if (!loop || node.declarations.length !== 1) {
-      const constant = node.declarations.find(declaration => !declaration.initializer);
-      if (constant) return constant;
-    }
-  }
-  return ts.forEachChild(node, uninitializedConst);
+function isJavaScript(kind) {
+  return kind === ts.ScriptKind.JS || kind === ts.ScriptKind.JSX;
 }
 
-function parsed(fileName, text, scriptKind, firstLine = 1) {
+function scriptSourceType(source, nodeFormat) {
+  switch (path.extname(source.fileName).toLowerCase()) {
+    case ".cjs": return "commonjs";
+    case ".cts": return "script";
+    case ".mjs":
+    case ".mts": return "module";
+  }
+  if (nodeFormat === ts.ModuleKind.ESNext || ts.isExternalModule(source)) return "module";
+  return isJavaScript(source.scriptKind) && nodeFormat === ts.ModuleKind.CommonJS ? "commonjs" : "script";
+}
+
+function parsed(fileName, text, scriptKind, firstLine, nodeFormat, setup = false) {
   const source = ts.createSourceFile(fileName, text, options.target, true, scriptKind);
   const diagnostic = source.parseDiagnostics[0];
   if (diagnostic) {
     const line = source.getLineAndCharacterOfPosition(diagnostic.start ?? 0).line + firstLine;
     throw new Error(`line ${line}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
   }
-  if (scriptKind === ts.ScriptKind.JS || scriptKind === ts.ScriptKind.JSX) {
+  if (isJavaScript(scriptKind)) {
     const syntax = typescriptSyntax(source);
     if (syntax) {
       const line = source.getLineAndCharacterOfPosition(syntax.getStart(source)).line + firstLine;
       throw new Error(`line ${line}: TypeScript syntax is only allowed in TypeScript files`);
     }
   }
-  const constant = !source.isDeclarationFile && uninitializedConst(source);
-  if (constant) {
-    const line = source.getLineAndCharacterOfPosition(constant.getStart(source)).line + firstLine;
-    throw new Error(`line ${line}: const declarations must be initialized`);
+  const invalid = invalidScriptGrammar(source, scriptSourceType(source, nodeFormat), setup);
+  if (invalid) {
+    const line = source.getLineAndCharacterOfPosition(invalid.position).line + firstLine;
+    throw new Error(`line ${line}: ${invalid.message}`);
   }
   return source;
 }
 
 function scopeRequireCalls(source, kind) {
-  if (kind !== ts.ScriptKind.JS && kind !== ts.ScriptKind.JSX) return;
+  if (!isJavaScript(kind)) return;
   const calls = new Map();
   const requireCall = node => ts.isCallExpression(node) && ts.isIdentifier(node.expression)
     && node.expression.text === "require";
@@ -125,16 +129,21 @@ function hasDefaultExport(statement) {
     : clause.name.text === "default";
 }
 
-function setupImport(statement) {
-  if (ts.isImportDeclaration(statement)) {
-    const typeOnly = statement.importClause?.isTypeOnly ? "type {} from " : "";
-    const attributes = statement.attributes ? ` ${statement.attributes.getText()}` : "";
-    return `import ${typeOnly}${statement.moduleSpecifier.getText()}${attributes};\n`;
+function setupScript(source, block, imports, separators) {
+  const parts = [];
+  let end = 0;
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) && !ts.isImportEqualsDeclaration(statement)) continue;
+    const start = statement.getStart(source);
+    const location = source.getLineAndCharacterOfPosition(start);
+    const text = source.text.slice(start, statement.end);
+    imports.push({ text, line: block.loc.start.line + location.line, offset: block.loc.start.offset + start });
+    parts.push(source.text.slice(end, start), ";", text.slice(1).replace(/[^\r\n\u2028\u2029]/g, " "));
+    separators.add(start);
+    end = statement.end;
   }
-  if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)) {
-    return `import type {} from ${statement.moduleReference.expression.getText()} with { "resolution-mode": "require" };\n`;
-  }
-  return "";
+  parts.push(source.text.slice(end));
+  return parts.join("");
 }
 
 function vueSource(fileName, text, occupied) {
@@ -157,39 +166,65 @@ function vueSource(fileName, text, occupied) {
   }
   let script = "";
   let defaultExport = false;
-  let setupImports = "";
   let setupStart;
+  let setupBody;
+  const imports = [];
+  const separators = new Set();
   const chunks = [];
+  function append(text, line, offset, setup) {
+    const start = script.length;
+    script += text;
+    chunks.push({ start, end: script.length, line, offset, setup });
+  }
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
     const setup = block === descriptor.scriptSetup;
-    const originalLine = block.loc.start.line;
+    const { line, offset } = block.loc.start;
     const kind = scriptKinds.get(languages[index]);
-    if (kind === undefined) throw new Error(`line ${originalLine}: unsupported script language ${languages[index]}`);
-    const blockSource = parsed(virtualName, block.content, kind, originalLine);
+    if (kind === undefined) throw new Error(`line ${line}: unsupported script language ${languages[index]}`);
+    if (block.src) {
+      defaultExport = true;
+      append(`export { default } from ${JSON.stringify(block.src)};`, line, offset, false);
+      script += "\n";
+      continue;
+    }
+    const blockSource = parsed(virtualName, block.content, kind, line, ts.ModuleKind.ESNext, setup);
     if (setup) {
       script += ";";
       setupStart = script.length;
       script += "(async function () {\n";
-      setupImports = blockSource.statements.map(setupImport).join("");
+      setupBody = script.length;
+      append(setupScript(blockSource, block, imports, separators), line, offset, true);
+      script += "\n});\n";
     } else {
       defaultExport = blockSource.statements.some(hasDefaultExport);
+      append(block.content, line, offset, false);
+      script += "\n;\n";
     }
-    const start = script.length;
-    script += block.content;
-    chunks.push({ start, end: script.length, originalLine });
-    script += setup ? "\n});\n" : "\n;\n";
   }
-  script += setupImports;
+  for (const { text, line, offset } of imports) {
+    append(text, line, offset, true);
+    script += "\n;\n";
+  }
   if (!defaultExport) script += "export default {};\n";
 
   const kind = scriptKinds.get(extension);
   const source = ts.createSourceFile(virtualName, script, options.target, true, kind);
-  const chunkAt = position => chunks.find(chunk => position >= chunk.start && position < chunk.end);
+  function chunkAt(position) {
+    let first = 0;
+    let last = chunks.length;
+    while (first < last) {
+      const middle = Math.floor((first + last) / 2);
+      const chunk = chunks[middle];
+      if (position < chunk.start) last = middle;
+      else if (position >= chunk.end) first = middle + 1;
+      else return chunk;
+    }
+  }
   function originalLine(position) {
     const chunk = chunkAt(position);
     if (!chunk) return 1;
-    return chunk.originalLine + source.getLineAndCharacterOfPosition(position).line
+    return chunk.line + source.getLineAndCharacterOfPosition(position).line
       - source.getLineAndCharacterOfPosition(chunk.start).line;
   }
   const diagnostic = source.parseDiagnostics[0];
@@ -198,16 +233,19 @@ function vueSource(fileName, text, occupied) {
   }
   scopeRequireCalls(source, kind);
   const scripts = [];
-  for (const statement of source.statements) {
+  function record(statement) {
     const start = statement.getStart(source);
-    if (chunkAt(start)) {
-      scripts.push({ statement, setup: false });
-    } else if (start === setupStart) {
-      for (const child of statement.expression.expression.body.statements) {
-        scripts.push({ statement: child, setup: true });
-      }
-    }
+    const chunk = chunkAt(start);
+    if (chunk) scripts.push({ statement, setup: chunk.setup, offset: chunk.offset + start - chunk.start });
   }
+  for (const statement of source.statements) {
+    if (statement.getStart(source) === setupStart) {
+      for (const child of statement.expression.expression.body.statements) {
+        if (!separators.has(child.getStart(source) - setupBody)) record(child);
+      }
+    } else record(statement);
+  }
+  scripts.sort((left, right) => left.offset - right.offset);
   return {
     source,
     scripts,
@@ -222,6 +260,7 @@ function loadFiles(root, files) {
   const skipped = new Set();
   const warnings = [];
   const occupied = new Set(files.map(file => canonical(path.resolve(root, file.path))));
+  const packageInfo = ts.createModuleResolutionCache(root, canonical, nodeFormatOptions).getPackageJsonInfoCache();
   for (const file of files) {
     const fileName = path.resolve(root, file.path);
     try {
@@ -234,7 +273,8 @@ function loadFiles(root, files) {
       } else {
         const extension = path.extname(fileName).slice(1).toLowerCase();
         const kind = scriptKinds.get(extension);
-        metadata.source = parsed(fileName, text, kind);
+        const nodeFormat = ts.getImpliedNodeFormatForFile(fileName, packageInfo, ts.sys, nodeFormatOptions);
+        metadata.source = parsed(fileName, text, kind, 1, nodeFormat);
         scopeRequireCalls(metadata.source, kind);
         metadata.line = position => metadata.source.getLineAndCharacterOfPosition(position).line + 1;
       }

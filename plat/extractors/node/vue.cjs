@@ -43,7 +43,7 @@ function runtimeEntries(facts, node, seen = new Set()) {
       if (ts.isSpreadAssignment(property)) {
         spread(property.expression);
       } else {
-        const name = nameOf(property.name);
+        const name = facts.propertyName(property.name);
         if (name !== undefined) entries.set(name, { declaration: property, value: property.initializer ?? property.name });
       }
     }
@@ -96,7 +96,11 @@ function typeOfRuntimeProp(facts, node, seen = new Set()) {
       if (result.text !== "any") return result;
     }
   }
-  const constructor = facts.checker.getTypeAtLocation(node).getConstructSignatures()[0];
+  let constructor = facts.checker.getTypeAtLocation(node).getConstructSignatures()[0];
+  if (!constructor) {
+    const symbol = facts.bindingExportSymbol(node);
+    if (symbol) constructor = facts.checker.getTypeOfSymbol(facts.unalias(symbol)).getConstructSignatures()[0];
+  }
   if (!constructor) return unknown;
   const type = constructor.getReturnType();
   return { text: facts.typeText(type, node), types: [{ type }] };
@@ -143,20 +147,20 @@ function emitsFromType(facts, file, node, add) {
     const [eventName] = signature.getParameters();
     if (!eventName) continue;
     const names = facts.checker.getTypeOfSymbolAtLocation(eventName, node);
+    const events = (names.isUnion() ? names.types : [names]).filter(name => name.isStringLiteral());
+    if (!events.length) continue;
     const location = localLocation(file, signature.declaration, node);
     const { params, type: result } = facts.signatureMembers(signature, node, 1);
-    for (const name of names.isUnion() ? names.types : [names]) {
-      if (name.isStringLiteral()) {
-        add(event(facts, file, name.value, location, params, result));
-      }
-    }
+    for (const name of events) add(event(facts, file, name.value, location, params, result));
+    facts.typeDependencies(file.module, facts.line(file, location), facts.signatureTypes(signature));
   }
   for (const property of type.getProperties()) {
     const tuple = facts.checker.getTypeOfSymbolAtLocation(property, node);
     if (!facts.checker.isTupleType(tuple)) continue;
     const declaration = property.valueDeclaration ?? property.declarations?.[0];
     const location = localLocation(file, declaration, node);
-    const params = facts.checker.getTypeArguments(tuple).map((item, index) => {
+    const items = facts.checker.getTypeArguments(tuple);
+    const params = items.map((item, index) => {
       const label = tuple.target.labeledElementDeclarations?.[index];
       const flags = tuple.target.elementFlags[index];
       const rest = Boolean(flags & ts.ElementFlags.Rest);
@@ -165,21 +169,40 @@ function emitsFromType(facts, file, node, add) {
         : annotation?.getText() ?? facts.typeText(item, node);
       return { name: nameOf(label?.name) ?? `arg${index + 1}`, type };
     });
-    add(event(facts, file, property.name, location, params));
+    const row = event(facts, file, property.name, location, params);
+    add(row);
+    facts.typeDependencies(file.module, row.line, items);
   }
 }
 
+function callSignatures(facts, type) {
+  return type ? facts.checker.getNonNullableType(type).getCallSignatures() : [];
+}
+
+function validatorSignatures(facts, validator) {
+  if (!validator) return [];
+  const signatures = callSignatures(facts, facts.checker.getTypeAtLocation(validator));
+  if (signatures.length || !ts.isFunctionLike(validator)) return signatures;
+  const signature = facts.checker.getSignatureFromDeclaration(validator);
+  return signature ? [signature] : [];
+}
+
 function emitsFromRuntime(facts, file, node, origin, add) {
+  const mapType = facts.checker.getTypeAtLocation(node);
   for (const [name, { declaration, value }] of runtimeEntries(facts, node)) {
-    const validator = ts.isMethodDeclaration(declaration) ? declaration : runtimeValue(facts, value);
-    const signature = validator && facts.checker.getTypeAtLocation(validator).getCallSignatures()[0];
-    const params = validator && ts.isFunctionLike(validator)
-      ? validator.parameters.map(parameter => facts.parameter(parameter))
-      : signature?.getParameters().map(parameter => ({
-        name: parameter.name,
-        type: facts.typeText(facts.checker.getTypeOfSymbolAtLocation(parameter, validator), validator),
-      })) ?? [];
-    add(event(facts, file, name, localLocation(file, declaration, origin), params));
+    const validator = ts.isMethodDeclaration(declaration) ? declaration : value;
+    const property = validator && mapType.getProperty(name);
+    let signatures = callSignatures(facts, property && facts.checker.getTypeOfSymbolAtLocation(property, node));
+    if (!signatures.length) signatures = validatorSignatures(facts, validator);
+    if (!signatures.length) signatures = validatorSignatures(facts, runtimeValue(facts, validator));
+    const location = localLocation(file, declaration, origin);
+    const [signature] = signatures;
+    const params = signature ? facts.signatureMembers(signature, location).params : [];
+    const row = event(facts, file, name, location, params);
+    add(row);
+    for (const effective of signatures) {
+      facts.typeDependencies(file.module, row.line, facts.signatureTypes(effective));
+    }
   }
 }
 
@@ -286,4 +309,24 @@ function vueMembers(facts, file) {
   element.members.sort((left, right) => left.line - right.line);
 }
 
-exports.vueMembers = vueMembers;
+function vueImportDependencies(facts, file, node, imported, line) {
+  const id = file.module;
+  if (imported.language === "vue") facts.add("dependency", id, imported.module, line);
+  const seen = new Set();
+  function namespaceDependencies(symbol) {
+    if (!symbol) return;
+    const module = facts.unalias(symbol);
+    if (seen.has(module) || !module.declarations?.some(ts.isSourceFile)) return;
+    seen.add(module);
+    for (const exported of facts.checker.getExportsOfModule(module)) {
+      facts.add("dependency", id, facts.target(exported, true), line);
+      namespaceDependencies(exported);
+    }
+  }
+  for (const name of importBindings(node)) {
+    facts.add("dependency", id, facts.referenceTarget(name, true), line);
+    namespaceDependencies(facts.checker.getSymbolAtLocation(name));
+  }
+}
+
+module.exports = { vueMembers, vueImportDependencies };
