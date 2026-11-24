@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 FORMAT = "plat/1"
@@ -64,8 +65,10 @@ def has_model(root: Path) -> bool:
 
 
 def write_json(path: Path, data: dict) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    with os.fdopen(handle, "w") as stream:
+        stream.write(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    os.chmod(temporary, 0o644)
     os.replace(temporary, path)
 
 
